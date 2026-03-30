@@ -25,15 +25,16 @@ import kotlinx.coroutines.flow.collectLatest
 /**
  * Background service that handles:
  * 1. Bluetooth connection with glasses
- * 2. Receiving voice audio from glasses
- * 3. Speech recognition (via Gemini)
- * 4. Translation (ML Kit local + Gemini cloud)
- * 5. Sending results back to glasses
+ * 2. Speech recognition via Android SpeechRecognizer (phone mic)
+ * 3. Translation (ML Kit local + Gemini cloud)
+ * 4. Sending results back to glasses
  */
 class TranslatorService : Service() {
     
     companion object {
         private const val TAG = "TranslatorService"
+        const val ACTION_START_LISTENING = "com.rokid.translator.START_LISTENING"
+        const val ACTION_STOP_LISTENING = "com.rokid.translator.STOP_LISTENING"
     }
     
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -43,9 +44,7 @@ class TranslatorService : Service() {
     private var mlKitTranslator: MLKitTranslator? = null
     private var geminiTranslator: GeminiTranslator? = null
     private var settingsRepo: SettingsRepository? = null
-    
-    // Gemini for STT
-    private var geminiStt: com.google.ai.client.generativeai.GenerativeModel? = null
+    private var speechManager: SpeechRecognizerManager? = null
     
     override fun onCreate() {
         super.onCreate()
@@ -54,10 +53,17 @@ class TranslatorService : Service() {
         ServiceBridge.updateServiceState(true)
     }
     
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START_LISTENING -> startSpeechRecognition()
+            ACTION_STOP_LISTENING -> stopSpeechRecognition()
+        }
+        return START_STICKY
+    }
+    
     private fun initializeServices() {
         settingsRepo = SettingsRepository.getInstance(this)
         
-        // Get API key from settings or BuildConfig
         val apiKey = settingsRepo?.getSettings()?.geminiApiKey?.takeIf { it.isNotBlank() }
             ?: BuildConfig.GEMINI_API_KEY
         
@@ -78,13 +84,8 @@ class TranslatorService : Service() {
             }
         }
         
-        // Initialize Gemini STT model
-        if (apiKey.isNotBlank()) {
-            geminiStt = com.google.ai.client.generativeai.GenerativeModel(
-                modelName = "gemini-2.0-flash",
-                apiKey = apiKey
-            )
-        }
+        // Initialize SpeechRecognizer (phone mic)
+        initSpeechRecognizer()
         
         // Initialize Bluetooth
         bluetoothManager = BluetoothSppManager(this, serviceScope)
@@ -104,7 +105,7 @@ class TranslatorService : Service() {
             }
         }
         
-        // Monitor messages from glasses
+        // Monitor messages from glasses (keep glasses audio path intact)
         serviceScope.launch {
             bluetoothManager?.messageFlow?.collect { message ->
                 handleGlassesMessage(message)
@@ -116,20 +117,18 @@ class TranslatorService : Service() {
             settingsRepo?.settingsFlow?.collectLatest { settings ->
                 val key = settings.geminiApiKey.takeIf { it.isNotBlank() } ?: BuildConfig.GEMINI_API_KEY
                 geminiTranslator?.updateApiKey(key)
-                if (key.isNotBlank()) {
-                    geminiStt = com.google.ai.client.generativeai.GenerativeModel(
-                        modelName = "gemini-2.0-flash",
-                        apiKey = key
-                    )
+                // Update speech recognizer language hint
+                val langHint = when (settings.languagePair) {
+                    LanguagePair.ES_EN -> "es"
+                    LanguagePair.IT_EN -> "it"
                 }
+                speechManager?.setLanguageHint(langHint)
             }
         }
         
         // Initialize CXR if available
         if (CxrMobileManager.isSdkAvailable()) {
             cxrManager = CxrMobileManager(this)
-            
-            // If glasses are connected via BT, try CXR connection too
             serviceScope.launch {
                 bluetoothManager?.connectionState?.collectLatest { state ->
                     if (state == BluetoothConnectionState.CONNECTED) {
@@ -141,66 +140,81 @@ class TranslatorService : Service() {
                 }
             }
         }
+        
+        // Auto-start listening
+        startSpeechRecognition()
     }
     
-    private suspend fun handleGlassesMessage(message: Message) {
-        when (message.type) {
-            MessageType.VOICE_END -> {
-                val audioData = message.binaryData
-                if (audioData == null || audioData.isEmpty()) {
-                    sendToGlasses(Message.aiError("No audio received"))
-                    return
+    private fun initSpeechRecognizer() {
+        speechManager = SpeechRecognizerManager(
+            context = this,
+            onPartialResult = { partial ->
+                ServiceBridge.updateStatus("Hearing: $partial")
+            },
+            onFinalResult = { transcript ->
+                Log.d(TAG, "STT result: $transcript")
+                serviceScope.launch {
+                    processTranscript(transcript)
                 }
-                
-                processAudioForTranslation(audioData)
+            },
+            onError = { error ->
+                Log.w(TAG, "STT error: $error")
+                ServiceBridge.updateStatus("STT: $error")
+            },
+            onListeningStateChanged = { listening ->
+                ServiceBridge.updateListeningState(listening)
+                if (listening) {
+                    ServiceBridge.updateStatus("Listening...")
+                }
             }
-            MessageType.VOICE_START -> {
-                ServiceBridge.updateListeningState(true)
-                ServiceBridge.updateStatus("Listening...")
-            }
-            else -> {
-                Log.d(TAG, "Unhandled message: ${message.type}")
-            }
+        )
+        
+        // Set initial language hint
+        val langHint = when (settingsRepo?.getSettings()?.languagePair) {
+            LanguagePair.ES_EN -> "es"
+            LanguagePair.IT_EN -> "it"
+            else -> "es"
         }
+        speechManager?.setLanguageHint(langHint)
     }
     
-    private suspend fun processAudioForTranslation(audioData: ByteArray) {
-        ServiceBridge.updateListeningState(false)
-        ServiceBridge.updateStatus("Processing speech...")
+    private fun startSpeechRecognition() {
+        speechManager?.startContinuousListening()
+        ServiceBridge.updateStatus("Listening...")
+        ServiceBridge.updateSttActive(true)
+    }
+    
+    private fun stopSpeechRecognition() {
+        speechManager?.stopListening()
+        ServiceBridge.updateStatus("Stopped")
+        ServiceBridge.updateSttActive(false)
+    }
+    
+    /**
+     * Process a transcript from SpeechRecognizer through the translation pipeline.
+     */
+    private suspend fun processTranscript(transcript: String) {
+        if (transcript.isBlank()) return
         
         val settings = settingsRepo?.getSettings() ?: return
         val languagePair = settings.languagePair
         
-        // Send processing status to glasses
-        sendToGlasses(Message.aiProcessing("Transcribing..."))
+        // Send transcript to glasses
+        sendToGlasses(Message.userTranscript(transcript))
         
         try {
-            // Step 1: Transcribe audio using Gemini STT
-            val transcript = transcribeAudio(audioData, languagePair)
-            if (transcript.isBlank()) {
-                sendToGlasses(Message.aiError("Could not understand speech"))
-                ServiceBridge.updateStatus("No speech detected")
-                return
-            }
-            
-            Log.d(TAG, "Transcript: $transcript")
-            
-            // Send transcript to glasses
-            sendToGlasses(Message.userTranscript(transcript))
-            
-            // Step 2: Detect language
+            // Detect language
             val detectedLang = LanguageDetector.detect(transcript)
             val (sourceLang, targetLang) = languagePair.translateDirection(detectedLang)
             
             Log.d(TAG, "Detected: $detectedLang, translating $sourceLang → $targetLang")
             ServiceBridge.updateStatus("Translating ($sourceLang → $targetLang)...")
             
-            // Step 3: ML Kit local translation (fast)
+            // ML Kit local translation (fast)
             var localResult: String? = null
             try {
                 localResult = mlKitTranslator?.translate(transcript, sourceLang, targetLang)
                 if (localResult != null) {
-                    // Send local result immediately to glasses
                     val displayText = "[$sourceLang→$targetLang] $localResult"
                     sendToGlasses(Message.aiResponse(displayText))
                     
@@ -215,12 +229,11 @@ class TranslatorService : Service() {
                 Log.e(TAG, "ML Kit translation failed", e)
             }
             
-            // Step 4: Gemini cloud translation (better quality)
+            // Gemini cloud translation (better quality)
             if (settings.useCloudTranslation) {
                 try {
                     val cloudResult = geminiTranslator?.translate(transcript, sourceLang, targetLang)
                     if (cloudResult != null && cloudResult != localResult) {
-                        // Update glasses with cloud result
                         val displayText = "[$sourceLang→$targetLang] $cloudResult"
                         sendToGlasses(Message.aiResponse(displayText))
                         
@@ -233,11 +246,10 @@ class TranslatorService : Service() {
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Gemini translation failed", e)
-                    // Local result already sent, so this is non-fatal
                 }
             }
             
-            ServiceBridge.updateStatus("Ready")
+            ServiceBridge.updateStatus("Listening...")
             
         } catch (e: Exception) {
             Log.e(TAG, "Translation pipeline error", e)
@@ -247,43 +259,21 @@ class TranslatorService : Service() {
     }
     
     /**
-     * Transcribe audio using Gemini.
-     * Sends raw PCM audio with a prompt to transcribe.
+     * Handle messages from glasses (keep existing audio path for future use).
      */
-    private suspend fun transcribeAudio(audioData: ByteArray, languagePair: LanguagePair): String {
-        val model = geminiStt ?: throw IllegalStateException("Gemini not configured")
-        
-        val langHint = when (languagePair) {
-            LanguagePair.ES_EN -> "Spanish or English"
-            LanguagePair.IT_EN -> "Italian or English"
-        }
-        
-        // For now, use Gemini text model with a note about audio
-        // In production, use Gemini's audio API when available
-        // Fallback: use Android SpeechRecognizer
-        
-        // Since we can't send raw PCM to Gemini text model directly,
-        // we'll use Android's built-in speech recognition as a bridge
-        // The glasses already send us the audio - we need to transcribe it
-        
-        // TODO: Integrate with Gemini audio API or use Android SpeechRecognizer
-        // For now, return a placeholder that triggers the translation flow
-        // The actual STT happens on the glasses side or via a dedicated STT service
-        
-        return try {
-            // Use Gemini to transcribe by sending audio context
-            val prompt = "The user just spoke in $langHint. Based on the audio context, transcribe what was said. If you cannot process audio, respond with AUDIO_NOT_SUPPORTED."
-            val response = model.generateContent(prompt)
-            val text = response.text?.trim() ?: ""
-            if (text.contains("AUDIO_NOT_SUPPORTED")) {
-                // Fallback: the audio data is PCM, we need proper STT
-                // For now, indicate this needs proper STT integration
-                Log.w(TAG, "Direct audio STT not available, need proper integration")
-                ""
-            } else text
-        } catch (e: Exception) {
-            Log.e(TAG, "STT failed", e)
-            ""
+    private suspend fun handleGlassesMessage(message: Message) {
+        when (message.type) {
+            MessageType.VOICE_END -> {
+                // Glasses sent audio - for v1, we use phone mic via SpeechRecognizer instead
+                // Keep this path intact for future glasses-mic integration
+                Log.d(TAG, "Received glasses audio (${message.binaryData?.size ?: 0} bytes) - using phone mic STT instead")
+            }
+            MessageType.VOICE_START -> {
+                Log.d(TAG, "Glasses started recording")
+            }
+            else -> {
+                Log.d(TAG, "Unhandled message: ${message.type}")
+            }
         }
     }
     
@@ -309,12 +299,14 @@ class TranslatorService : Service() {
     
     override fun onDestroy() {
         super.onDestroy()
+        speechManager?.destroy()
         serviceScope.cancel()
         bluetoothManager?.disconnect(restartListening = false)
         bluetoothManager?.stopListening()
         cxrManager?.release()
         mlKitTranslator?.close()
         ServiceBridge.updateServiceState(false)
+        ServiceBridge.updateSttActive(false)
     }
     
     override fun onBind(intent: Intent?): IBinder? = null

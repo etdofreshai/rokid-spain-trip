@@ -18,6 +18,7 @@ data class TranslatorUiState(
     val bluetoothState: BluetoothConnectionState = BluetoothConnectionState.DISCONNECTED,
     val connectedDeviceName: String? = null,
     val isListening: Boolean = false,
+    val isSttActive: Boolean = false,
     val statusText: String = "Ready",
     val languagePair: LanguagePair = LanguagePair.ES_EN,
     val useCloudTranslation: Boolean = true,
@@ -79,6 +80,12 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         }
         
         viewModelScope.launch {
+            ServiceBridge.isSttActiveFlow.collectLatest { active ->
+                _uiState.update { it.copy(isSttActive = active) }
+            }
+        }
+        
+        viewModelScope.launch {
             ServiceBridge.translationFlow.collect { result ->
                 _uiState.update { current ->
                     // Replace last entry if it's an update (same original text), else add
@@ -130,5 +137,16 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     
     fun clearTranslations() {
         _uiState.update { it.copy(translations = emptyList()) }
+    }
+    
+    fun toggleStt() {
+        val context = getApplication<Application>()
+        val intent = Intent(context, TranslatorService::class.java)
+        if (_uiState.value.isSttActive) {
+            intent.action = TranslatorService.ACTION_STOP_LISTENING
+        } else {
+            intent.action = TranslatorService.ACTION_START_LISTENING
+        }
+        context.startService(intent)
     }
 }

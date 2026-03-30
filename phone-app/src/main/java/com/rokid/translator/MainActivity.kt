@@ -63,7 +63,8 @@ class MainActivity : ComponentActivity() {
                     onCloudToggle = viewModel::setUseCloudTranslation,
                     onApiKeyChange = viewModel::setGeminiApiKey,
                     onToggleSettings = viewModel::toggleSettings,
-                    onClearHistory = viewModel::clearTranslations
+                    onClearHistory = viewModel::clearTranslations,
+                    onToggleStt = viewModel::toggleStt
                 )
             }
         }
@@ -92,7 +93,8 @@ fun TranslatorScreen(
     onCloudToggle: (Boolean) -> Unit,
     onApiKeyChange: (String) -> Unit,
     onToggleSettings: () -> Unit,
-    onClearHistory: () -> Unit
+    onClearHistory: () -> Unit,
+    onToggleStt: () -> Unit = {}
 ) {
     Scaffold(
         topBar = {
@@ -143,6 +145,24 @@ fun TranslatorScreen(
                 )
             }
             
+            // Mic toggle button
+            Button(
+                onClick = onToggleStt,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (uiState.isSttActive) Color(0xFFF44336) else MaterialTheme.colorScheme.primary
+                )
+            ) {
+                Icon(
+                    if (uiState.isSttActive) Icons.Default.MicOff else Icons.Default.Mic,
+                    contentDescription = null
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(if (uiState.isSttActive) "Stop Listening" else "Start Listening")
+            }
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
             // Translation feed
             Text(
                 "Translations",
@@ -172,7 +192,7 @@ fun TranslatorScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                "Translations will appear here\nSpeak into the glasses mic",
+                                "Translations will appear here\nSpeak nearby — phone mic is listening",
                                 textAlign = TextAlign.Center,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                             )

@@ -39,10 +39,14 @@ object ServiceBridge {
     private val _statusTextFlow = MutableStateFlow("Ready")
     val statusTextFlow: StateFlow<String> = _statusTextFlow.asStateFlow()
     
+    private val _isSttActiveFlow = MutableStateFlow(false)
+    val isSttActiveFlow: StateFlow<Boolean> = _isSttActiveFlow.asStateFlow()
+    
     suspend fun emitTranslation(result: TranslationResult) { _translationFlow.emit(result) }
     fun updateServiceState(running: Boolean) { _serviceStateFlow.value = running }
     fun updateBluetoothState(state: BluetoothConnectionState) { _bluetoothStateFlow.value = state }
     fun updateConnectedDeviceName(name: String?) { _connectedDeviceNameFlow.value = name }
     fun updateListeningState(listening: Boolean) { _isListeningFlow.value = listening }
     fun updateStatus(text: String) { _statusTextFlow.value = text }
+    fun updateSttActive(active: Boolean) { _isSttActiveFlow.value = active }
 }
