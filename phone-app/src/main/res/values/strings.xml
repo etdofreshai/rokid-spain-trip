@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Rokid Translator</string>
+    <string name="service_notification_title">Rokid Translator</string>
+    <string name="service_notification_text">Translation service running</string>
+</resources>
