@@ -26,6 +26,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "RokidTranslator"
 
-include(":common")
-include(":phone-app")
 include(":glasses-app")
