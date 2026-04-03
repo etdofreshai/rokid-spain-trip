@@ -415,15 +415,6 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                             status = "Result"
                         )
                     }
-                    upsertFeedEntry(
-                        resultId = null,
-                        originalText = "",
-                        translatedText = data,
-                        pronunciationText = "",
-                        provider = "Rokid",
-                        sourceLanguage = "",
-                        targetLanguage = ""
-                    )
                 }
             }
             "Trans_ChangeSceneIdStatus" -> handleTransReady(data)
@@ -572,15 +563,6 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                             status = "Cloud translated"
                         )
                     }
-                    upsertFeedEntry(
-                        resultId = resultId,
-                        originalText = sourceText,
-                        translatedText = cloudResult.translation,
-                        pronunciationText = cloudResult.pronunciation,
-                        provider = "OpenRouter",
-                        sourceLanguage = languageDisplayName(sourceLanguage),
-                        targetLanguage = languageDisplayName(targetLanguage)
-                    )
                         addLog("Cloud translation ready after ${formatElapsed(elapsedSince(firstResultAtMs))}: ${cloudResult.translation}")
                         return@launch
                 } catch (cloudError: Exception) {
@@ -609,15 +591,6 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                         status = "Rokid fallback"
                     )
                 }
-                upsertFeedEntry(
-                    resultId = resultId,
-                    originalText = sourceText,
-                    translatedText = fallback,
-                    pronunciationText = "",
-                    provider = "Rokid",
-                    sourceLanguage = languageDisplayName(sourceLanguage),
-                    targetLanguage = languageDisplayName(targetLanguage)
-                )
                 addLog("Rokid fallback ready after ${formatElapsed(elapsedSince(firstResultAtMs))}: $fallback")
                 Log.d(TAG, "Rokid fallback ready: $fallback")
                 return@launch
@@ -664,15 +637,6 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                         }
                     )
                 }
-                upsertFeedEntry(
-                    resultId = resultId,
-                    originalText = sourceText,
-                    translatedText = visibleTranslation,
-                    pronunciationText = "",
-                    provider = if (visibleTranslation == translated) "Local" else "",
-                    sourceLanguage = languageDisplayName(sourceLanguage),
-                    targetLanguage = languageDisplayName(targetLanguage)
-                )
                 addLog("Local translation ready after ${formatElapsed(elapsedSince(firstResultAtMs))}: $translated")
                 Log.d(TAG, "Local translation ready: $translated")
             } catch (localError: Exception) {
@@ -706,15 +670,6 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                             status = "Rokid fallback"
                         )
                     }
-                    upsertFeedEntry(
-                        resultId = resultId,
-                        originalText = sourceText,
-                        translatedText = visibleFallback,
-                        pronunciationText = "",
-                        provider = if (visibleFallback.isNotBlank()) "Rokid" else "",
-                        sourceLanguage = languageDisplayName(sourceLanguage),
-                        targetLanguage = languageDisplayName(targetLanguage)
-                    )
                     addLog("Rokid fallback ready after ${formatElapsed(elapsedSince(firstResultAtMs))}: $fallback")
                     Log.d(TAG, "Rokid fallback ready: $fallback")
                     return@launch
@@ -732,15 +687,6 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                         status = "Translation unavailable"
                     )
                 }
-                upsertFeedEntry(
-                    resultId = resultId,
-                    originalText = sourceText,
-                    translatedText = "",
-                    pronunciationText = "",
-                    provider = "",
-                    sourceLanguage = languageDisplayName(sourceLanguage),
-                    targetLanguage = languageDisplayName(targetLanguage)
-                )
             }
         }
     }
