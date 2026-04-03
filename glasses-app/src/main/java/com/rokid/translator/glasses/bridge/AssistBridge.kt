@@ -100,6 +100,12 @@ class AssistBridge(private val context: Context) {
         }
     }
 
+    fun requestLanguageInfo() {
+        sendGatt("Trans", "Trans_Language_info", "")
+        sendGatt("Trans", "Trans_GetLanguage", "")
+        Log.d(TAG, "Requested language info from phone")
+    }
+
     fun isConnected() = connected && binder != null
 
     private fun transact(code: Int, block: (Parcel) -> Unit) {

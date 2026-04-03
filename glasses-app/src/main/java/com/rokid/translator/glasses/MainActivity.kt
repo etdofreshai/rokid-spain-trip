@@ -55,7 +55,8 @@ class MainActivity : ComponentActivity() {
                 TranslatorScreen(
                     state = viewModel.state.collectAsState().value,
                     onToggle = { viewModel.toggleTranslation() },
-                    onOpenWifi = { openWifiSettings() }
+                    onOpenWifi = { openWifiSettings() },
+                    onCycleSilenceDelay = { viewModel.cycleSilenceDelay() }
                 )
             }
         }
@@ -106,6 +107,7 @@ fun TranslatorScreen(
     state: com.rokid.translator.glasses.viewmodel.TranslatorState,
     onToggle: () -> Unit,
     onOpenWifi: () -> Unit,
+    onCycleSilenceDelay: () -> Unit = {},
 ) {
     val debugPreview = remember(state.debugLog) {
         state.debugLog
@@ -114,10 +116,10 @@ fun TranslatorScreen(
             .takeLast(15)
             .joinToString("\n")
     }
-    val languageDisplay = remember(state.detectedLanguage, state.targetLanguage, state.configuredPairLabel) {
+    val languageDisplay = remember(state.detectedLanguage, state.targetLanguage, state.configuredPairLabel, state.mode) {
         when {
-            state.mode == TranslationMode.ONLINE &&
-                (state.detectedLanguage.isNotEmpty() || state.targetLanguage.isNotEmpty()) ->
+            state.mode != TranslationMode.DISABLED &&
+                state.detectedLanguage.isNotEmpty() && state.targetLanguage.isNotEmpty() ->
                 state.detectedLanguage + " -> " + state.targetLanguage
             else -> state.configuredPairLabel
         }
@@ -161,6 +163,14 @@ fun TranslatorScreen(
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.clickable { onOpenWifi() }
                     )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "${state.silenceDelayMs / 1000.0}s",
+                        color = Color(0xFFFF9800),
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.clickable { onCycleSilenceDelay() }
+                    )
                 }
 
                 if (state.isListening) {
@@ -189,6 +199,7 @@ fun TranslatorScreen(
             if (state.mode == TranslationMode.DISABLED) {
                 ModeMenuPane(
                     counterpartLanguage = state.counterpartLanguageLabel,
+                    phoneModel = state.phoneModel,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(0.42f)
@@ -196,6 +207,9 @@ fun TranslatorScreen(
             } else {
                 FeedPane(
                     entries = state.feedEntries,
+                    liveOriginal = state.sourceText,
+                    liveTranslation = if (state.isTranslating && state.translatedText.isBlank()) "..." else state.translatedText,
+                    livePronunciation = state.pronunciationText,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(0.42f)
@@ -262,12 +276,25 @@ private fun StatusBadge(
 @Composable
 private fun ModeMenuPane(
     counterpartLanguage: String,
+    phoneModel: String,
     modifier: Modifier = Modifier,
 ) {
     Column(
         modifier = modifier.padding(top = 2.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
+        if (counterpartLanguage.isNotBlank() || phoneModel.isNotBlank()) {
+            Text(
+                text = listOf(
+                    "$counterpartLanguage <-> English",
+                    if (phoneModel.isNotBlank()) "Phone STT: $phoneModel" else ""
+                ).filter { it.isNotBlank() }.joinToString("  |  "),
+                color = Color(0xFF888888),
+                fontSize = 4.sp,
+                fontFamily = FontFamily.Monospace
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+        }
         Text(
             text = "Tap to cycle modes",
             color = Color(0xFF7FB7C9),
@@ -276,7 +303,7 @@ private fun ModeMenuPane(
             fontFamily = FontFamily.Monospace
         )
         ModeMenuLine("1", "Disabled", "Stop listening and show this menu")
-        ModeMenuLine("2", "Local", "$counterpartLanguage -> English")
+        ModeMenuLine("2", "Local", "$counterpartLanguage <-> English (auto-detect)")
         ModeMenuLine("3", "Online", "Requires Wi-Fi / hotspot")
     }
 }
@@ -284,17 +311,29 @@ private fun ModeMenuPane(
 @Composable
 private fun FeedPane(
     entries: List<TranslationFeedEntry>,
+    liveOriginal: String,
+    liveTranslation: String,
+    livePronunciation: String,
     modifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
-    val newestFirst = remember(entries) { entries.asReversed() }
-    val latestEntry = newestFirst.firstOrNull()
-    val historyEntries = newestFirst.drop(1).take(15)
+    // History = all entries except the last (active) one, newest first
+    val historyEntries = remember(entries) {
+        if (entries.size > 1) entries.dropLast(1).asReversed().take(15) else emptyList()
+    }
 
-    LaunchedEffect(entries.size, latestEntry?.translatedText, latestEntry?.pronunciationText) {
-        if (latestEntry != null) {
-            scrollState.animateScrollTo(0)
-        }
+    val heroEntry = TranslationFeedEntry(
+        resultId = null,
+        originalText = liveOriginal.ifBlank { entries.lastOrNull()?.originalText ?: "Waiting for speech..." },
+        translatedText = liveTranslation.ifBlank { entries.lastOrNull()?.translatedText ?: "Waiting for translation..." },
+        pronunciationText = livePronunciation.ifBlank { entries.lastOrNull()?.pronunciationText ?: "" },
+        provider = "",
+        sourceLanguage = "",
+        targetLanguage = ""
+    )
+
+    LaunchedEffect(entries.size, liveTranslation, livePronunciation) {
+        scrollState.animateScrollTo(0)
     }
 
     Column(
@@ -303,28 +342,9 @@ private fun FeedPane(
             .fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        if (entries.isEmpty()) {
-            HeroFeedEntry(
-                entry = TranslationFeedEntry(
-                    resultId = null,
-                    originalText = "Waiting for speech...",
-                    translatedText = "Waiting for translation...",
-                    pronunciationText = "-",
-                    provider = "",
-                    sourceLanguage = "",
-                    targetLanguage = ""
-                )
-            )
-        } else {
-            latestEntry?.let { entry ->
-                HeroFeedEntry(entry = entry)
-            }
-            if (historyEntries.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(0.dp))
-            }
-            historyEntries.forEach { entry ->
-                CompactFeedEntry(entry = entry)
-            }
+        HeroFeedEntry(entry = heroEntry)
+        historyEntries.forEach { entry ->
+            CompactFeedEntry(entry = entry)
         }
     }
 }
