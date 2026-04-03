@@ -86,6 +86,7 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
         appName = BuildConfig.OPENROUTER_APP_NAME,
     )
     private var activeResultId: Int? = null
+    private var finalizedResultIds = mutableSetOf<Int>()
     private var activeTranslationAlternatives: List<String> = emptyList()
     private var activeTranslationJob: Job? = null
     private var activeTranslationNonce = 0L
@@ -406,9 +407,10 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                         )
                     }
 
-                    // On final result (temporary=false), insert to history
-                    if (!isTemporary) {
-                        // Let local translation refine first, then finalize
+                    // On final result (temporary=false), insert to history (once per resultId)
+                    val alreadyFinalized = resultId != null && resultId in finalizedResultIds
+                    if (!isTemporary && !alreadyFinalized) {
+                        if (resultId != null) finalizedResultIds.add(resultId)
                         requestLocalTranslationAndFinalize(
                             sourceText = source,
                             sourceLanguage = sourceCode,
@@ -820,6 +822,7 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
     private fun resetResultTracking() {
         activeResultId = null
         activeTranslationAlternatives = emptyList()
+        finalizedResultIds.clear()
     }
 
     private fun beginResultTracking(resultId: Int?) {
