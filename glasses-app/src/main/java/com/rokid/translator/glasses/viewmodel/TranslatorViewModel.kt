@@ -155,19 +155,19 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
         resultId: Int?,
         fallbackTranslation: String,
     ) {
-        activeTranslationNonce += 1
-        val nonce = activeTranslationNonce
-        activeTranslationJob?.cancel()
-        activeTranslationJob = viewModelScope.launch {
-            if (nonce != activeTranslationNonce) return@launch
+        // Run in a separate job that won't be cancelled by temporary results
+        viewModelScope.launch {
+            var bestTranslation = fallbackTranslation
+            var provider = "Rokid"
 
-            // Try local translation, then finalize with best result
+            // Try local translation to refine
             try {
                 val translated = withTimeoutOrNull(3000) {
                     localTranslator.translate(sourceText, sourceLanguage, targetLanguage)
                 }
-                if (nonce != activeTranslationNonce) return@launch
                 if (translated != null && translated.isNotBlank()) {
+                    bestTranslation = translated
+                    provider = "Local"
                     _state.update {
                         it.copy(
                             translatedText = translated,
@@ -181,8 +181,32 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                 addLog("Local translation failed: ${e.message}")
             }
 
-            // Finalize to history with whatever we have now
-            finalizePhraseToHistory()
+            // Insert to history with the best translation we got
+            val current = _state.value
+            upsertFeedEntry(
+                resultId = resultId,
+                originalText = sourceText,
+                translatedText = bestTranslation,
+                pronunciationText = current.pronunciationText,
+                provider = provider,
+                sourceLanguage = languageDisplayName(sourceLanguage),
+                targetLanguage = languageDisplayName(targetLanguage)
+            )
+
+            // TTS in TTS mode
+            if (current.mode == TranslationMode.LOCAL_TTS && bestTranslation.isNotBlank()) {
+                bridge.playTts(bestTranslation)
+                addLog("TTS: $bestTranslation")
+            }
+
+            _state.update {
+                it.copy(
+                    isTranslating = false,
+                    isTemporaryResult = false,
+                    status = statusForMode(it.mode, connected = it.isConnected, listening = it.isListening)
+                )
+            }
+            addLog("Phrase finalized to history")
         }
     }
 
