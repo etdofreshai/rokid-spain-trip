@@ -341,15 +341,23 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                     }
                     beginResultTracking(resultId)
 
-                    // Always show heard text immediately
-                    val isNewPhrase = resultId != null && resultId != _state.value.let {
-                        it.feedEntries.lastOrNull()?.resultId
-                    }
+                    // Reset silence timer on every result
+                    resetSilenceTimer()
+
+                    // Check if Rokid's translation is different from the source (actual translation vs echo)
+                    val rokidTranslated = translated.trim()
+                    val sourceNorm = source.trim().lowercase()
+                    val transNorm = rokidTranslated.lowercase()
+                    val isEcho = sourceNorm.isNotBlank() && transNorm.isNotBlank() &&
+                        (sourceNorm == transNorm ||
+                         sourceNorm.replace(Regex("[^\\p{L}\\s]"), "") == transNorm.replace(Regex("[^\\p{L}\\s]"), ""))
+
+                    // Always show heard text immediately + Rokid translation if it's real
                     _state.update {
                         it.copy(
                             sourceText = source.ifBlank { it.sourceText },
-                            // Show "..." until we have a real translation
-                            translatedText = if (isTemporary && it.isTranslating) it.translatedText else it.translatedText,
+                            translatedText = if (!isEcho && rokidTranslated.isNotBlank()) rokidTranslated else it.translatedText,
+                            translationProvider = if (!isEcho && rokidTranslated.isNotBlank()) "Rokid" else it.translationProvider,
                             isTranslating = true,
                             isTemporaryResult = isTemporary,
                             detectedLanguage = lang.ifBlank { it.detectedLanguage },
@@ -358,21 +366,7 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                         )
                     }
 
-                    // Reset silence timer on every result
-                    resetSilenceTimer()
-
-                    if (source.isBlank()) {
-                        if (translated.isNotBlank()) {
-                            _state.update {
-                                it.copy(
-                                    translatedText = translated,
-                                    translationProvider = "Rokid",
-                                    isTranslating = false
-                                )
-                            }
-                        }
-                        return
-                    }
+                    if (source.isBlank()) return
 
                     val (sourceCode, targetCode) = resolveDirection(source, _state.value.mode)
                     val sourceLabel = languageDisplayName(sourceCode)
@@ -386,7 +380,7 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                         )
                     }
 
-                    // Kick off local/cloud translation (will update translatedText when ready)
+                    // Kick off local/cloud translation to refine
                     requestLocalTranslation(
                         sourceText = source,
                         sourceLanguage = sourceCode,
