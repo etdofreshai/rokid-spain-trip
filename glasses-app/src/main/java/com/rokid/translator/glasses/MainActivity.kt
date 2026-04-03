@@ -113,7 +113,7 @@ fun TranslatorScreen(
         state.debugLog
             .lines()
             .filter { it.isNotBlank() }
-            .takeLast(15)
+            .takeLast(5)
             .joinToString("\n")
     }
     val languageDisplay = remember(state.detectedLanguage, state.targetLanguage, state.configuredPairLabel, state.mode) {
@@ -200,7 +200,7 @@ fun TranslatorScreen(
                 ModeMenuPane(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(0.42f)
+                        .weight(0.70f)
                 )
             } else {
                 FeedPane(
@@ -210,26 +210,25 @@ fun TranslatorScreen(
                     livePronunciation = state.pronunciationText,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(0.42f)
+                        .weight(0.70f)
                 )
             }
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(0.50f),
+                    .weight(0.22f),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
                 if (debugPreview.isNotEmpty()) {
                     Column {
-                        Text("-- DEBUG --", color = Color(0xFF555555), fontSize = 6.sp)
-                        Spacer(modifier = Modifier.height(1.dp))
+                        Text("-- DEBUG --", color = Color(0xFF555555), fontSize = 5.sp)
                         Text(
                             debugPreview,
                             color = Color(0xFF777777),
-                            fontSize = 5.sp,
+                            fontSize = 4.sp,
                             fontFamily = FontFamily.Monospace,
-                            lineHeight = 6.sp,
-                            maxLines = 15,
+                            lineHeight = 5.sp,
+                            maxLines = 5,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -238,7 +237,7 @@ fun TranslatorScreen(
                 Text(
                     state.status,
                     color = Color.White.copy(alpha = 0.4f),
-                    fontSize = 6.sp,
+                    fontSize = 5.sp,
                     textAlign = TextAlign.Left,
                     modifier = Modifier.fillMaxWidth().padding(bottom = 1.dp)
                 )
@@ -309,17 +308,13 @@ private fun FeedPane(
         list.asReversed().take(15)
     }
 
-    val heroEntry = if (hasLiveContent) {
-        TranslationFeedEntry(
-            resultId = null,
-            originalText = liveOriginal,
-            translatedText = liveTranslation,
-            pronunciationText = livePronunciation,
-            provider = "", sourceLanguage = "", targetLanguage = ""
-        )
-    } else {
-        null
-    }
+    val heroEntry = TranslationFeedEntry(
+        resultId = null,
+        originalText = if (hasLiveContent) liveOriginal else "",
+        translatedText = if (hasLiveContent) liveTranslation else "",
+        pronunciationText = if (hasLiveContent) livePronunciation else "",
+        provider = "", sourceLanguage = "", targetLanguage = ""
+    )
 
     LaunchedEffect(entries.size, liveTranslation, livePronunciation) {
         scrollState.animateScrollTo(0)
@@ -331,8 +326,9 @@ private fun FeedPane(
             .fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        if (heroEntry != null) {
-            HeroFeedEntry(entry = heroEntry)
+        HeroFeedEntry(entry = heroEntry)
+        if (historyEntries.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(2.dp))
         }
         historyEntries.forEach { entry ->
             CompactFeedEntry(entry = entry)
@@ -349,17 +345,17 @@ private fun HeroFeedEntry(
         horizontalAlignment = Alignment.Start,
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        FeedHeroLine(label = "heard", value = entry.originalText.ifBlank { "-"}, valueFontSize = 7.sp)
+        FeedHeroLine(label = "heard", value = entry.originalText.ifBlank { "-"}, valueFontSize = 9.sp)
         FeedHeroLine(
             label = "trans",
             value = entry.translatedText.ifBlank { "-" },
-            valueFontSize = 5.sp
+            valueFontSize = 7.sp
         )
         if (entry.pronunciationText.isNotBlank()) {
             FeedHeroLine(
                 label = "say",
                 value = entry.pronunciationText,
-                valueFontSize = 5.sp,
+                valueFontSize = 6.sp,
                 valueColor = Color.White.copy(alpha = 0.72f)
             )
         }
@@ -385,8 +381,8 @@ private fun CompactFeedEntry(
                 }
             }.ifBlank { "-" },
             color = Color.White.copy(alpha = 0.68f),
-            fontSize = 5.sp,
-            lineHeight = 5.sp,
+            fontSize = 6.sp,
+            lineHeight = 7.sp,
             fontFamily = FontFamily.Monospace,
             style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)),
             softWrap = true
