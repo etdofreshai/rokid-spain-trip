@@ -35,6 +35,12 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     val uiState: StateFlow<TranslatorUiState> = _uiState.asStateFlow()
     
     init {
+        // Load saved translation history
+        val savedHistory = settingsRepo.loadTranslationHistory()
+        if (savedHistory.isNotEmpty()) {
+            _uiState.update { it.copy(translations = savedHistory) }
+        }
+
         // Collect settings
         viewModelScope.launch {
             settingsRepo.settingsFlow.collectLatest { settings ->
@@ -98,7 +104,9 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     }
                     // Keep last 50
                     if (translations.size > 50) translations.removeAt(0)
-                    current.copy(translations = translations)
+                    current.copy(translations = translations).also {
+                        settingsRepo.saveTranslationHistory(it.translations)
+                    }
                 }
             }
         }
@@ -137,6 +145,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     
     fun clearTranslations() {
         _uiState.update { it.copy(translations = emptyList()) }
+        settingsRepo.clearTranslationHistory()
     }
     
     fun toggleStt() {

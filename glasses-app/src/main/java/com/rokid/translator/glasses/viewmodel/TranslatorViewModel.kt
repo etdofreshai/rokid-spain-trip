@@ -1,37 +1,94 @@
 package com.rokid.translator.glasses.viewmodel
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.rokid.translator.glasses.BuildConfig
 import com.rokid.translator.glasses.bridge.AssistBridge
+import com.rokid.translator.glasses.network.NetworkMonitor
+import com.rokid.translator.glasses.translation.CloudConversationTranslator
+import com.rokid.translator.glasses.translation.ConversationLanguageDetector
+import com.rokid.translator.glasses.translation.OnDeviceConversationTranslator
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+
+enum class TranslationMode(val label: String) {
+    DISABLED("Disabled"),
+    LOCAL("Local"),
+    ONLINE("Online");
+}
 
 data class TranslatorState(
     val status: String = "Tap to connect",
+    val mode: TranslationMode = TranslationMode.DISABLED,
+    val counterpartLanguageLabel: String = "Italian",
     val sourceText: String = "",
     val translatedText: String = "",
     val translationAlternatives: List<String> = emptyList(),
+    val pronunciationText: String = "",
+    val translationProvider: String = "",
+    val feedEntries: List<TranslationFeedEntry> = emptyList(),
+    val configuredPairLabel: String = "Italian <-> English",
     val detectedLanguage: String = "",
     val targetLanguage: String = "",
+    val isOnline: Boolean = false,
     val isConnected: Boolean = false,
     val isListening: Boolean = false,
     val isTemporaryResult: Boolean = false,
     val debugLog: String = "",
 )
 
+data class TranslationFeedEntry(
+    val resultId: Int?,
+    val originalText: String = "",
+    val translatedText: String = "",
+    val pronunciationText: String = "",
+    val provider: String = "",
+    val sourceLanguage: String = "",
+    val targetLanguage: String = "",
+)
+
 class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBridge.Listener {
 
-    companion object { private const val TAG = "TranslatorVM" }
+    companion object {
+        private const val TAG = "TranslatorVM"
+        private const val HISTORY_PREFS = "translation_history"
+        private const val KEY_FEED = "feed_entries"
+    }
+
+    private val historyPrefs: SharedPreferences =
+        context.getSharedPreferences(HISTORY_PREFS, Context.MODE_PRIVATE)
 
     private val bridge = AssistBridge(context)
+    private val networkMonitor = NetworkMonitor(context)
+    private val localTranslator = OnDeviceConversationTranslator()
+    private val cloudTranslator = CloudConversationTranslator(
+        apiKey = BuildConfig.OPENROUTER_API_KEY,
+        model = BuildConfig.OPENROUTER_MODEL,
+        siteUrl = BuildConfig.OPENROUTER_SITE_URL,
+        appName = BuildConfig.OPENROUTER_APP_NAME,
+    )
     private var activeResultId: Int? = null
     private var activeTranslationAlternatives: List<String> = emptyList()
+    private var activeTranslationJob: Job? = null
+    private var activeTranslationNonce = 0L
+    private var preferredCounterpartCode = "it"
+    private var preferredCounterpartLabel = "Italian"
+    private var listeningStartedAtMs = 0L
+    private var translationRequestedAtMs = 0L
+    private var sceneReadyAtMs = 0L
+    private var firstResultAtMs = 0L
 
     private val _state = MutableStateFlow(TranslatorState())
     val state: StateFlow<TranslatorState> = _state.asStateFlow()
@@ -39,51 +96,104 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
     init {
         bridge.setListener(this)
         viewModelScope.launch { bridge.bind() }
+        observeNetworkState()
+        preloadPreferredModels()
+        _state.update {
+            it.copy(
+                feedEntries = loadFeedHistory(),
+                counterpartLanguageLabel = preferredCounterpartLabel,
+                configuredPairLabel = routeLabelForMode(it.mode),
+                status = statusForMode(it.mode, connected = false, listening = false)
+            )
+        }
     }
 
     fun toggleTranslation() {
-        if (_state.value.isListening) {
+        applyMode(nextMode(_state.value.mode, _state.value.isOnline))
+    }
+
+    private fun applyMode(mode: TranslationMode) {
+        val previousMode = _state.value.mode
+        val connected = bridge.isConnected()
+        val shouldStart = mode != TranslationMode.DISABLED && connected
+
+        resetResultTracking()
+        cancelActiveTranslation()
+
+        if (mode == TranslationMode.DISABLED) {
+            listeningStartedAtMs = 0L
+            clearStartupTiming()
+            addLog("Stopping translation for ${previousMode.label}")
             bridge.stopTranslation()
-            resetResultTracking()
-            _state.update {
-                it.copy(
-                    isListening = false,
-                    isTemporaryResult = false,
-                    translationAlternatives = emptyList(),
-                    status = "Stopped"
-                )
-            }
         } else {
-            if (!bridge.isConnected()) {
-                addLog("Not connected - rebinding")
+            if (!connected) {
+                addLog("Not connected - rebinding for ${mode.label}")
                 bridge.bind()
-                return
+            } else {
+                listeningStartedAtMs = System.currentTimeMillis()
+                markTranslationRequested("mode=${mode.label}")
+                addLog("Requesting translation start for ${mode.label}")
+                bridge.startTranslation()
             }
-            bridge.startTranslation()
-            resetResultTracking()
-            _state.update {
-                it.copy(
-                    sourceText = "",
-                    translatedText = "",
-                    translationAlternatives = emptyList(),
-                    isListening = true,
-                    isTemporaryResult = false,
-                    status = "Listening..."
-                )
-            }
+        }
+
+        _state.update {
+            it.copy(
+                mode = mode,
+                sourceText = "",
+                translatedText = "",
+                pronunciationText = "",
+                translationProvider = "",
+                translationAlternatives = emptyList(),
+                detectedLanguage = "",
+                targetLanguage = "",
+                counterpartLanguageLabel = preferredCounterpartLabel,
+                isListening = false,
+                isTemporaryResult = false,
+                configuredPairLabel = routeLabelForMode(mode),
+                status = statusForMode(mode, connected = connected, listening = false, starting = shouldStart)
+            )
         }
     }
 
     // AssistBridge.Listener
     override fun onConnected() {
         Log.d(TAG, "Bridge connected")
-        _state.update { it.copy(isConnected = true, status = "Connected - tap to listen") }
+        val selectedMode = _state.value.mode
+        if (selectedMode != TranslationMode.DISABLED) {
+            resetResultTracking()
+            cancelActiveTranslation()
+            listeningStartedAtMs = System.currentTimeMillis()
+            markTranslationRequested("bridge reconnect mode=${selectedMode.label}")
+            addLog("Bridge connected - requesting translation start for ${selectedMode.label}")
+            bridge.startTranslation()
+        }
+        _state.update {
+            it.copy(
+                isConnected = true,
+                isListening = false,
+                counterpartLanguageLabel = preferredCounterpartLabel,
+                configuredPairLabel = routeLabelForMode(selectedMode),
+                status = statusForMode(
+                    mode = selectedMode,
+                    connected = true,
+                    listening = false,
+                    starting = selectedMode != TranslationMode.DISABLED
+                )
+            )
+        }
         addLog("Bridge connected")
     }
 
     override fun onDisconnected() {
         Log.d(TAG, "Bridge disconnected")
-        _state.update { it.copy(isConnected = false, isListening = false, status = "Disconnected") }
+        _state.update {
+            it.copy(
+                isConnected = false,
+                isListening = false,
+                status = statusForMode(it.mode, connected = false, listening = false)
+            )
+        }
         addLog("Bridge disconnected")
     }
 
@@ -101,10 +211,13 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
 
     override fun onSceneStatus(translateRunning: Boolean) {
         addLog("Scene status translateRunning=$translateRunning")
+        if (translateRunning) {
+            markSceneReady("scene status")
+        }
         _state.update {
             it.copy(
                 isListening = translateRunning,
-                status = if (translateRunning) "Listening..." else if (it.isConnected) "Connected - tap to listen" else "Disconnected"
+                status = statusForMode(it.mode, connected = it.isConnected, listening = translateRunning)
             )
         }
     }
@@ -112,14 +225,27 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
     private fun handleTransMessage(key: String, data: String) {
         when (key) {
             "Trans_Start" -> {
-                _state.update { it.copy(isListening = true, status = "Listening...") }
+                markSceneReady("Trans_Start")
+                _state.update {
+                    it.copy(
+                        isListening = true,
+                        status = statusForMode(it.mode, connected = it.isConnected, listening = true)
+                    )
+                }
                 addLog("Translation started by phone")
             }
             "Trans_Stop" -> {
-                _state.update { it.copy(isListening = false, status = "Stopped") }
+                clearStartupTiming()
+                _state.update {
+                    it.copy(
+                        isListening = false,
+                        status = statusForMode(it.mode, connected = it.isConnected, listening = false)
+                    )
+                }
                 addLog("Translation stopped by phone")
             }
             "Trans_Result" -> {
+                if (_state.value.mode == TranslationMode.DISABLED) return
                 try {
                     val json = org.json.JSONObject(data)
                     val resultId = json.optInt("id", -1).takeIf { it >= 0 }
@@ -144,32 +270,131 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                     )
                     val isTemporary = json.optBoolean("temporary", false)
                     val isFinished = json.optBoolean("finished", false)
-                    val alternatives = updateTranslationAlternatives(resultId, translated)
-                    _state.update {
+                    if (shouldIgnoreStartupTranscript(source, translated)) {
+                        addLog("Ignoring startup prompt transcript")
+                        return
+                    }
+                    markFirstResult(resultId, isTemporary)
+                    if (!_state.value.isListening) {
+                        _state.update {
+                            it.copy(
+                                isListening = true,
+                                status = statusForMode(
+                                    mode = it.mode,
+                                    connected = it.isConnected,
+                                    listening = true
+                                )
+                            )
+                        }
+                    }
+                    beginResultTracking(resultId)
+                    if (source.isBlank()) {
+                        val alternatives = updateTranslationAlternatives(resultId, translated)
+                        _state.update {
                         it.copy(
-                            sourceText = source.ifBlank { it.sourceText },
                             translatedText = translated.ifBlank { it.translatedText },
+                            pronunciationText = "",
+                            translationProvider = "Rokid",
                             translationAlternatives = alternatives,
                             detectedLanguage = lang.ifBlank { it.detectedLanguage },
                             targetLanguage = target.ifBlank { it.targetLanguage },
                             isTemporaryResult = isTemporary,
-                            status = when {
-                                isFinished -> "Translated"
-                                isTemporary -> "Translating..."
-                                else -> "Translated"
-                            }
+                                status = if (isTemporary) "Translating..." else "Translated"
+                            )
+                        }
+                        upsertFeedEntry(
+                            resultId = resultId,
+                            originalText = source,
+                            translatedText = translated,
+                            pronunciationText = "",
+                            provider = "Rokid",
+                            sourceLanguage = lang.ifBlank { _state.value.detectedLanguage },
+                            targetLanguage = target.ifBlank { _state.value.targetLanguage }
+                        )
+                        return
+                    }
+
+                    val (sourceCode, targetCode) = resolveDirection(source, _state.value.mode)
+                    val sourceLabel = languageDisplayName(sourceCode)
+                    val targetLabel = languageDisplayName(targetCode)
+                    val fallbackDisplay = normalizedAlternativeOrBlank(
+                        sourceText = source,
+                        candidate = firstNonBlank(
+                            if (sourceCode == targetCode) "" else translated,
+                            translated
+                        ),
+                        sourceLanguage = sourceCode,
+                        targetLanguage = targetCode
+                    )
+                    val fallbackAlternatives = if (fallbackDisplay.isNotBlank()) {
+                        updateTranslationAlternatives(
+                            resultId = resultId,
+                            translation = fallbackDisplay,
+                            sourceText = source,
+                            sourceLanguage = sourceCode,
+                            targetLanguage = targetCode
+                        )
+                    } else {
+                        activeTranslationAlternatives
+                    }
+                    val visibleFallback = preferVisibleTranslation(
+                        current = _state.value.translatedText,
+                        candidate = fallbackDisplay.ifBlank { translated },
+                        isTemporary = isTemporary,
+                        isFinished = isFinished
+                    )
+                    _state.update {
+                        it.copy(
+                            sourceText = source,
+                            translatedText = visibleFallback.ifBlank { it.translatedText },
+                            pronunciationText = if (targetCode != "en") it.pronunciationText else "",
+                            translationProvider = if (visibleFallback.isNotBlank()) "Rokid" else it.translationProvider,
+                            translationAlternatives = fallbackAlternatives,
+                            detectedLanguage = sourceLabel,
+                            targetLanguage = targetLabel,
+                            isTemporaryResult = isTemporary,
+                            status = if (visibleFallback.isNotBlank()) "Refining locally..." else "Translating locally..."
                         )
                     }
+                    upsertFeedEntry(
+                        resultId = resultId,
+                        originalText = source,
+                        translatedText = visibleFallback,
+                        pronunciationText = "",
+                        provider = if (visibleFallback.isNotBlank()) "Rokid" else "",
+                        sourceLanguage = sourceLabel,
+                        targetLanguage = targetLabel
+                    )
+                    requestLocalTranslation(
+                        sourceText = source,
+                        sourceLanguage = sourceCode,
+                        targetLanguage = targetCode,
+                        resultId = resultId,
+                        fallbackTranslation = translated,
+                        isTemporary = isTemporary,
+                        isFinished = isFinished
+                    )
                 } catch (e: Exception) {
                     val alternatives = updateTranslationAlternatives(null, data)
                     _state.update {
                         it.copy(
                             translatedText = data,
+                            pronunciationText = "",
+                            translationProvider = "Rokid",
                             translationAlternatives = alternatives,
                             isTemporaryResult = false,
                             status = "Result"
                         )
                     }
+                    upsertFeedEntry(
+                        resultId = null,
+                        originalText = "",
+                        translatedText = data,
+                        pronunciationText = "",
+                        provider = "Rokid",
+                        sourceLanguage = "",
+                        targetLanguage = ""
+                    )
                 }
             }
             "Trans_ChangeSceneIdStatus" -> handleTransReady(data)
@@ -183,16 +408,7 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
     }
 
     private fun handleTransData(data: String) {
-        // Live/partial translation data
-        val alternatives = updateTranslationAlternatives(activeResultId, data)
-        _state.update {
-            it.copy(
-                translatedText = data,
-                translationAlternatives = alternatives,
-                isTemporaryResult = true,
-                status = "Translating..."
-            )
-        }
+        addLog("Ignoring assist partial data: $data")
     }
 
     private fun handleTransReady(data: String) {
@@ -204,6 +420,13 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
             val message = json.optString("message")
                 .ifEmpty { json.optString("msg") }
             if (ready) {
+                markSceneReady(
+                    when {
+                        changeSceneIdStatus.isNotEmpty() -> "ready:$changeSceneIdStatus"
+                        isOnline -> "ready:online"
+                        else -> "ready:listening"
+                    }
+                )
                 val status = when {
                     changeSceneIdStatus.isNotEmpty() -> "Ready (${changeSceneIdStatus})"
                     isOnline -> "Ready - online"
@@ -229,16 +452,303 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                 json.optString("to"),
                 json.optString("toLanguage")
             )
-            _state.update { it.copy(detectedLanguage = from, targetLanguage = to) }
-            addLog("Language: $from -> $to")
+            updatePreferredCounterpartLanguage(from, to)
+            _state.update {
+                it.copy(
+                    counterpartLanguageLabel = preferredCounterpartLabel,
+                    configuredPairLabel = routeLabelForMode(it.mode)
+                )
+            }
+            preloadPreferredModels()
+            addLog("Language pair: $from -> $to (preferred counterpart $preferredCounterpartLabel)")
         } catch (e: Exception) { /* ignore */ }
     }
 
     private fun firstNonBlank(vararg values: String): String =
         values.firstOrNull { it.isNotBlank() }?.trim().orEmpty()
 
-    private fun updateTranslationAlternatives(resultId: Int?, translation: String): List<String> {
-        val normalized = translation.trim()
+    private fun resolveDirection(sourceText: String, mode: TranslationMode): Pair<String, String> =
+        when (mode) {
+            TranslationMode.LOCAL -> preferredCounterpartCode to "en"
+            TranslationMode.ONLINE -> {
+                val sourceLanguage = ConversationLanguageDetector.detect(sourceText, preferredCounterpartCode)
+                val targetLanguage = if (sourceLanguage == "en") preferredCounterpartCode else "en"
+                sourceLanguage to targetLanguage
+            }
+            TranslationMode.DISABLED -> preferredCounterpartCode to "en"
+        }
+
+    private fun requestLocalTranslation(
+        sourceText: String,
+        sourceLanguage: String,
+        targetLanguage: String,
+        resultId: Int?,
+        fallbackTranslation: String,
+        isTemporary: Boolean,
+        isFinished: Boolean,
+    ) {
+        activeTranslationNonce += 1
+        val nonce = activeTranslationNonce
+        activeTranslationJob?.cancel()
+        activeTranslationJob = viewModelScope.launch {
+            if (isTemporary) delay(450)
+            if (nonce != activeTranslationNonce) return@launch
+
+            val currentMode = _state.value.mode
+            val fallback = normalizedAlternativeOrBlank(
+                sourceText = sourceText,
+                candidate = fallbackTranslation,
+                sourceLanguage = sourceLanguage,
+                targetLanguage = targetLanguage
+            )
+
+            if (currentMode == TranslationMode.ONLINE &&
+                cloudTranslator.isConfigured() &&
+                _state.value.isOnline
+            ) {
+                try {
+                    addLog("Cloud translation request: ${languageDisplayName(sourceLanguage)} -> ${languageDisplayName(targetLanguage)}")
+                    addLog("OpenRouter model: ${BuildConfig.OPENROUTER_MODEL}")
+                    val cloudResult = cloudTranslator.translateWithPronunciation(
+                        text = sourceText,
+                        sourceLanguage = sourceLanguage,
+                        targetLanguage = targetLanguage
+                    )
+                    if (nonce != activeTranslationNonce) return@launch
+
+                    val alternatives = updateTranslationAlternatives(
+                        resultId = resultId,
+                        translation = cloudResult.translation,
+                        sourceText = sourceText,
+                        sourceLanguage = sourceLanguage,
+                        targetLanguage = targetLanguage
+                    )
+                    _state.update {
+                        it.copy(
+                            translatedText = cloudResult.translation,
+                            pronunciationText = cloudResult.pronunciation,
+                            translationProvider = "OpenRouter",
+                            translationAlternatives = alternatives,
+                            detectedLanguage = languageDisplayName(sourceLanguage),
+                            targetLanguage = languageDisplayName(targetLanguage),
+                            isTemporaryResult = false,
+                            status = "Cloud translated"
+                        )
+                    }
+                    upsertFeedEntry(
+                        resultId = resultId,
+                        originalText = sourceText,
+                        translatedText = cloudResult.translation,
+                        pronunciationText = cloudResult.pronunciation,
+                        provider = "OpenRouter",
+                        sourceLanguage = languageDisplayName(sourceLanguage),
+                        targetLanguage = languageDisplayName(targetLanguage)
+                    )
+                        addLog("Cloud translation ready after ${formatElapsed(elapsedSince(firstResultAtMs))}: ${cloudResult.translation}")
+                        return@launch
+                } catch (cloudError: Exception) {
+                    addLog("Cloud translation failed: ${cloudError.message}")
+                    Log.e(TAG, "Cloud translation failed", cloudError)
+                }
+            }
+
+            if (currentMode == TranslationMode.ONLINE && fallback.isNotBlank()) {
+                val alternatives = updateTranslationAlternatives(
+                    resultId = resultId,
+                    translation = fallback,
+                    sourceText = sourceText,
+                    sourceLanguage = sourceLanguage,
+                    targetLanguage = targetLanguage
+                )
+                _state.update {
+                    it.copy(
+                        translatedText = fallback,
+                        pronunciationText = "",
+                        translationProvider = "Rokid",
+                        translationAlternatives = alternatives,
+                        detectedLanguage = languageDisplayName(sourceLanguage),
+                        targetLanguage = languageDisplayName(targetLanguage),
+                        isTemporaryResult = isTemporary,
+                        status = "Rokid fallback"
+                    )
+                }
+                upsertFeedEntry(
+                    resultId = resultId,
+                    originalText = sourceText,
+                    translatedText = fallback,
+                    pronunciationText = "",
+                    provider = "Rokid",
+                    sourceLanguage = languageDisplayName(sourceLanguage),
+                    targetLanguage = languageDisplayName(targetLanguage)
+                )
+                addLog("Rokid fallback ready after ${formatElapsed(elapsedSince(firstResultAtMs))}: $fallback")
+                Log.d(TAG, "Rokid fallback ready: $fallback")
+                return@launch
+            }
+
+            try {
+                addLog("Local translation request: ${languageDisplayName(sourceLanguage)} -> ${languageDisplayName(targetLanguage)} | $sourceText")
+                Log.d(TAG, "Local translation request: $sourceLanguage -> $targetLanguage | $sourceText")
+                val translated = withTimeoutOrNull(1200) {
+                    localTranslator.translate(sourceText, sourceLanguage, targetLanguage)
+                }
+                if (nonce != activeTranslationNonce) return@launch
+                if (translated == null) {
+                    throw IllegalStateException("Local translation timed out")
+                }
+
+                val alternatives = updateTranslationAlternatives(
+                    resultId = resultId,
+                    translation = translated,
+                    sourceText = sourceText,
+                    sourceLanguage = sourceLanguage,
+                    targetLanguage = targetLanguage
+                )
+                val visibleTranslation = preferVisibleTranslation(
+                    current = _state.value.translatedText,
+                    candidate = translated,
+                    isTemporary = isTemporary,
+                    isFinished = isFinished
+                )
+                _state.update {
+                    it.copy(
+                        translatedText = visibleTranslation,
+                        pronunciationText = "",
+                        translationProvider = if (visibleTranslation == translated) "Local" else it.translationProvider,
+                        translationAlternatives = alternatives,
+                        detectedLanguage = languageDisplayName(sourceLanguage),
+                        targetLanguage = languageDisplayName(targetLanguage),
+                        isTemporaryResult = isTemporary,
+                        status = when {
+                            isFinished -> "Translated locally"
+                            isTemporary -> "Translating locally..."
+                            else -> "Translated locally"
+                        }
+                    )
+                }
+                upsertFeedEntry(
+                    resultId = resultId,
+                    originalText = sourceText,
+                    translatedText = visibleTranslation,
+                    pronunciationText = "",
+                    provider = if (visibleTranslation == translated) "Local" else "",
+                    sourceLanguage = languageDisplayName(sourceLanguage),
+                    targetLanguage = languageDisplayName(targetLanguage)
+                )
+                addLog("Local translation ready after ${formatElapsed(elapsedSince(firstResultAtMs))}: $translated")
+                Log.d(TAG, "Local translation ready: $translated")
+            } catch (localError: Exception) {
+                if (nonce != activeTranslationNonce) return@launch
+                addLog("Local translation failed: ${localError.message}")
+                Log.e(TAG, "Local translation failed", localError)
+
+                if (fallback.isNotBlank()) {
+                    val alternatives = updateTranslationAlternatives(
+                        resultId = resultId,
+                        translation = fallback,
+                        sourceText = sourceText,
+                        sourceLanguage = sourceLanguage,
+                        targetLanguage = targetLanguage
+                    )
+                    val visibleFallback = preferVisibleTranslation(
+                        current = _state.value.translatedText,
+                        candidate = fallback,
+                        isTemporary = isTemporary,
+                        isFinished = true
+                    )
+                    _state.update {
+                        it.copy(
+                            translatedText = visibleFallback,
+                            pronunciationText = "",
+                            translationProvider = if (visibleFallback.isNotBlank()) "Rokid" else it.translationProvider,
+                            translationAlternatives = alternatives,
+                            detectedLanguage = languageDisplayName(sourceLanguage),
+                            targetLanguage = languageDisplayName(targetLanguage),
+                            isTemporaryResult = isTemporary,
+                            status = "Rokid fallback"
+                        )
+                    }
+                    upsertFeedEntry(
+                        resultId = resultId,
+                        originalText = sourceText,
+                        translatedText = visibleFallback,
+                        pronunciationText = "",
+                        provider = if (visibleFallback.isNotBlank()) "Rokid" else "",
+                        sourceLanguage = languageDisplayName(sourceLanguage),
+                        targetLanguage = languageDisplayName(targetLanguage)
+                    )
+                    addLog("Rokid fallback ready after ${formatElapsed(elapsedSince(firstResultAtMs))}: $fallback")
+                    Log.d(TAG, "Rokid fallback ready: $fallback")
+                    return@launch
+                }
+
+                _state.update {
+                    it.copy(
+                        translatedText = sourceText,
+                        pronunciationText = "",
+                        translationProvider = "",
+                        translationAlternatives = emptyList(),
+                        detectedLanguage = languageDisplayName(sourceLanguage),
+                        targetLanguage = languageDisplayName(targetLanguage),
+                        isTemporaryResult = isTemporary,
+                        status = "Translation unavailable"
+                    )
+                }
+                upsertFeedEntry(
+                    resultId = resultId,
+                    originalText = sourceText,
+                    translatedText = "",
+                    pronunciationText = "",
+                    provider = "",
+                    sourceLanguage = languageDisplayName(sourceLanguage),
+                    targetLanguage = languageDisplayName(targetLanguage)
+                )
+            }
+        }
+    }
+
+    private fun observeNetworkState() {
+        viewModelScope.launch {
+            networkMonitor.connectivityFlow().collect { online ->
+                val changed = _state.value.isOnline != online
+                _state.update { it.copy(isOnline = online) }
+                if (changed) {
+                    addLog(if (online) "Network online" else "Network offline")
+                    if (!online && _state.value.mode == TranslationMode.ONLINE) {
+                        addLog("Online unavailable offline - switching to Local")
+                        applyMode(TranslationMode.LOCAL)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun preloadPreferredModels() {
+        viewModelScope.launch {
+            try {
+                localTranslator.preloadCounterpart(preferredCounterpartCode)
+                addLog("Local models ready for English <-> $preferredCounterpartLabel")
+                Log.d(TAG, "Local models ready for English <-> $preferredCounterpartLabel")
+            } catch (error: Exception) {
+                addLog("Model preload failed: ${error.message}")
+                Log.e(TAG, "Model preload failed", error)
+            }
+        }
+    }
+
+    private fun updateTranslationAlternatives(
+        resultId: Int?,
+        translation: String,
+        sourceText: String = "",
+        sourceLanguage: String = "",
+        targetLanguage: String = "",
+    ): List<String> {
+        val normalized = normalizedAlternativeOrBlank(
+            sourceText = sourceText,
+            candidate = translation,
+            sourceLanguage = sourceLanguage,
+            targetLanguage = targetLanguage
+        )
         if (resultId != null && activeResultId != resultId) {
             activeResultId = resultId
             activeTranslationAlternatives = emptyList()
@@ -264,9 +774,61 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
         return updated
     }
 
+    private fun normalizedAlternativeOrBlank(
+        sourceText: String,
+        candidate: String,
+        sourceLanguage: String,
+        targetLanguage: String,
+    ): String {
+        val normalized = candidate.trim()
+        if (normalized.isBlank()) return ""
+        if (sourceLanguage.isNotBlank() &&
+            targetLanguage.isNotBlank() &&
+            sourceLanguage != targetLanguage &&
+            sourceText.isNotBlank() &&
+            areNearlySameAlternative(sourceText, normalized)
+        ) {
+            return ""
+        }
+        return normalized
+    }
+
+    private fun preferVisibleTranslation(
+        current: String,
+        candidate: String,
+        isTemporary: Boolean,
+        isFinished: Boolean,
+    ): String {
+        val existing = current.trim()
+        val proposed = candidate.trim()
+        if (proposed.isBlank()) return existing
+        if (existing.isBlank()) return proposed
+        if (isFinished) return proposed
+        if (areNearlySameAlternative(existing, proposed)) return proposed
+
+        val existingComparable = normalizeForComparison(existing)
+        val proposedComparable = normalizeForComparison(proposed)
+        if (existingComparable.isBlank() || proposedComparable.isBlank()) return existing
+        if (proposedComparable.startsWith(existingComparable)) {
+            return proposed
+        }
+        if (existingComparable.startsWith(proposedComparable)) {
+            return existing
+        }
+        return if (isTemporary) existing else proposed
+    }
+
     private fun resetResultTracking() {
         activeResultId = null
         activeTranslationAlternatives = emptyList()
+    }
+
+    private fun beginResultTracking(resultId: Int?) {
+        if (resultId != null && activeResultId != resultId) {
+            activeResultId = resultId
+            activeTranslationAlternatives = emptyList()
+            _state.update { it.copy(translatedText = "", pronunciationText = "", translationProvider = "", translationAlternatives = emptyList()) }
+        }
     }
 
     private fun shouldReplaceAlternative(previous: String, next: String): Boolean {
@@ -309,19 +871,236 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
         return index
     }
 
+    private fun updatePreferredCounterpartLanguage(from: String, to: String) {
+        val fromCode = languageCode(from)
+        val toCode = languageCode(to)
+        val counterpart = listOf(fromCode, toCode)
+            .firstOrNull { it != null && it != "en" }
+            ?: preferredCounterpartCode
+
+        preferredCounterpartCode = counterpart
+        preferredCounterpartLabel = languageDisplayName(counterpart)
+    }
+
+    private fun languageCode(value: String): String? {
+        val normalized = value.trim().lowercase(java.util.Locale.US)
+        return when {
+            normalized.startsWith("it") || normalized.contains("italian") -> "it"
+            normalized.startsWith("es") || normalized.contains("spanish") -> "es"
+            normalized.startsWith("en") || normalized.contains("english") -> "en"
+            else -> null
+        }
+    }
+
+    private fun languageDisplayName(languageCode: String): String =
+        when (languageCode) {
+            "es" -> "Spanish"
+            "it" -> "Italian"
+            else -> "English"
+        }
+
+    private fun providerPriority(provider: String): Int =
+        when (provider) {
+            "OpenRouter" -> 3
+            "Rokid" -> 2
+            "Local" -> 1
+            else -> 0
+        }
+
+    private fun cancelActiveTranslation() {
+        activeTranslationNonce += 1
+        activeTranslationJob?.cancel()
+        activeTranslationJob = null
+    }
+
+    private fun markTranslationRequested(reason: String) {
+        translationRequestedAtMs = System.currentTimeMillis()
+        sceneReadyAtMs = 0L
+        firstResultAtMs = 0L
+        addLog("Timing start requested ($reason)")
+    }
+
+    private fun markSceneReady(reason: String) {
+        if (sceneReadyAtMs != 0L) return
+        sceneReadyAtMs = System.currentTimeMillis()
+        val fromRequest = elapsedSince(translationRequestedAtMs)
+        addLog("Timing scene ready via $reason after ${formatElapsed(fromRequest)}")
+    }
+
+    private fun markFirstResult(resultId: Int?, isTemporary: Boolean) {
+        if (firstResultAtMs != 0L) return
+        firstResultAtMs = System.currentTimeMillis()
+        val fromRequest = elapsedSince(translationRequestedAtMs)
+        val fromReady = elapsedSince(sceneReadyAtMs)
+        val kind = if (isTemporary) "temporary" else "stable"
+        addLog(
+            "Timing first $kind result id=${resultId ?: -1} after ${formatElapsed(fromRequest)}" +
+                " (${formatElapsed(fromReady)} from ready)"
+        )
+    }
+
+    private fun clearStartupTiming() {
+        translationRequestedAtMs = 0L
+        sceneReadyAtMs = 0L
+        firstResultAtMs = 0L
+    }
+
+    private fun elapsedSince(timestampMs: Long): Long =
+        if (timestampMs <= 0L) -1L else System.currentTimeMillis() - timestampMs
+
+    private fun formatElapsed(durationMs: Long): String =
+        if (durationMs < 0L) "n/a" else "${durationMs}ms"
+
+    private fun upsertFeedEntry(
+        resultId: Int?,
+        originalText: String,
+        translatedText: String,
+        pronunciationText: String,
+        provider: String,
+        sourceLanguage: String,
+        targetLanguage: String,
+    ) {
+        _state.update { current ->
+            val entries = current.feedEntries.toMutableList()
+            val existingIndex = entries.indexOfLast { it.resultId == resultId && resultId != null }
+            val newPriority = providerPriority(provider)
+
+            if (existingIndex >= 0) {
+                val existing = entries[existingIndex]
+                val existingPriority = providerPriority(existing.provider)
+                val canReplaceProvider = newPriority >= existingPriority
+                entries[existingIndex] = existing.copy(
+                    originalText = originalText.ifBlank { existing.originalText },
+                    translatedText = if (canReplaceProvider) translatedText.ifBlank { existing.translatedText } else existing.translatedText,
+                    pronunciationText = if (canReplaceProvider) pronunciationText.ifBlank { existing.pronunciationText } else existing.pronunciationText,
+                    provider = if (canReplaceProvider) provider.ifBlank { existing.provider } else existing.provider,
+                    sourceLanguage = sourceLanguage.ifBlank { existing.sourceLanguage },
+                    targetLanguage = targetLanguage.ifBlank { existing.targetLanguage }
+                )
+            } else {
+                if (originalText.isBlank() && translatedText.isBlank()) return@update current
+                entries += TranslationFeedEntry(
+                    resultId = resultId,
+                    originalText = originalText,
+                    translatedText = translatedText,
+                    pronunciationText = pronunciationText,
+                    provider = provider,
+                    sourceLanguage = sourceLanguage,
+                    targetLanguage = targetLanguage
+                )
+            }
+
+            val updated = entries.takeLast(20)
+            saveFeedHistory(updated)
+            current.copy(feedEntries = updated)
+        }
+    }
+
+    private fun saveFeedHistory(entries: List<TranslationFeedEntry>) {
+        val array = JSONArray()
+        for (e in entries) {
+            array.put(JSONObject().apply {
+                put("resultId", e.resultId ?: JSONObject.NULL)
+                put("originalText", e.originalText)
+                put("translatedText", e.translatedText)
+                put("pronunciationText", e.pronunciationText)
+                put("provider", e.provider)
+                put("sourceLanguage", e.sourceLanguage)
+                put("targetLanguage", e.targetLanguage)
+            })
+        }
+        historyPrefs.edit().putString(KEY_FEED, array.toString()).apply()
+    }
+
+    private fun loadFeedHistory(): List<TranslationFeedEntry> {
+        val json = historyPrefs.getString(KEY_FEED, null) ?: return emptyList()
+        return try {
+            val array = JSONArray(json)
+            (0 until array.length()).map { i ->
+                val obj = array.getJSONObject(i)
+                TranslationFeedEntry(
+                    resultId = if (obj.isNull("resultId")) null else obj.getInt("resultId"),
+                    originalText = obj.optString("originalText", ""),
+                    translatedText = obj.optString("translatedText", ""),
+                    pronunciationText = obj.optString("pronunciationText", ""),
+                    provider = obj.optString("provider", ""),
+                    sourceLanguage = obj.optString("sourceLanguage", ""),
+                    targetLanguage = obj.optString("targetLanguage", ""),
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load feed history", e)
+            emptyList()
+        }
+    }
+
     private fun addLog(msg: String) {
         val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
             .format(java.util.Date())
         _state.update {
             val log = it.debugLog + "[$timestamp] $msg\n"
-            // Keep last 20 lines
-            val lines = log.lines().takeLast(20)
+            // Keep enough history for the wider on-screen debug pane.
+            val lines = log.lines().takeLast(60)
             it.copy(debugLog = lines.joinToString("\n"))
         }
     }
 
+    private fun routeLabelForMode(mode: TranslationMode): String =
+        when (mode) {
+            TranslationMode.DISABLED -> "Tap to choose mode"
+            TranslationMode.LOCAL -> "$preferredCounterpartLabel -> English"
+            TranslationMode.ONLINE -> "Auto online"
+        }
+
+    private fun shouldIgnoreStartupTranscript(source: String, translated: String): Boolean {
+        val startedAt = listeningStartedAtMs
+        if (startedAt <= 0L) return false
+        val elapsed = System.currentTimeMillis() - startedAt
+        if (elapsed > 6000L) return false
+
+        val combined = normalizeForComparison("$source $translated")
+        if (combined.isBlank()) return false
+
+        return combined.contains("translation has started") ||
+            combined.contains("the translation has started")
+    }
+
+    private fun nextMode(current: TranslationMode, onlineAvailable: Boolean): TranslationMode =
+        when (current) {
+            TranslationMode.DISABLED -> TranslationMode.LOCAL
+            TranslationMode.LOCAL -> if (onlineAvailable) TranslationMode.ONLINE else TranslationMode.DISABLED
+            TranslationMode.ONLINE -> TranslationMode.DISABLED
+        }
+
+    private fun statusForMode(
+        mode: TranslationMode,
+        connected: Boolean,
+        listening: Boolean,
+        starting: Boolean = false,
+    ): String =
+        when (mode) {
+            TranslationMode.DISABLED -> if (connected) "Mode disabled" else "Connecting..."
+            TranslationMode.LOCAL ->
+                when {
+                    !connected -> "Local mode - connecting..."
+                    starting -> "Local mode - starting..."
+                    listening -> "Local mode listening"
+                    else -> "Local mode ready"
+                }
+            TranslationMode.ONLINE ->
+                when {
+                    !connected -> "Online mode - connecting..."
+                    !this._state.value.isOnline -> "Online selected - offline fallback"
+                    starting -> "Online mode - starting..."
+                    listening -> "Online mode listening"
+                    else -> "Online mode ready"
+                }
+        }
+
     override fun onCleared() {
         super.onCleared()
+        cancelActiveTranslation()
+        localTranslator.close()
         bridge.unbind()
     }
 

@@ -28,6 +28,7 @@ class AssistBridge(private val context: Context) {
         private const val TYPE_NOTIFY_SCENE_STATUS = "cmd_notify_scene_status"
         private const val CMD_PHONE_GATT_SEND_DATA = "cmd_phone_gatt_send_data"
         private const val CMD_SCENE_STATUS_CHANGE = "CMD_SCENE_STATUS_CHANGE"
+        private const val CMD_PLAY_TTS = "cmd_play_tts"
     }
 
     interface Listener {
@@ -83,6 +84,20 @@ class AssistBridge(private val context: Context) {
     fun stopTranslation() {
         sendGatt("Trans", "Trans_Stop", "")
         sendScene("translate", false)
+    }
+
+    fun playTts(text: String) {
+        if (text.isBlank()) return
+        try {
+            sendControl(
+                JSONObject()
+                    .put("type", CMD_PLAY_TTS)
+                    .put("data", JSONObject().put("ttsMsg", text))
+                    .toString()
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Play TTS failed", e)
+        }
     }
 
     fun isConnected() = connected && binder != null

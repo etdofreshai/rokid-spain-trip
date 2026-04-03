@@ -1,0 +1,8 @@
+# Copy this to local.bot.properties and fill in your values.
+# DO NOT commit local.bot.properties to git.
+
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+OPENROUTER_MODEL=openai/gpt-4.1-mini
+# Optional:
+OPENROUTER_SITE_URL=
+OPENROUTER_APP_NAME=Rokid Translator

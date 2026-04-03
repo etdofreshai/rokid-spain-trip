@@ -9,6 +9,7 @@
 .externalNativeBuild
 .cxx
 local.properties
+local.bot.properties
 *.apk
 *.aab
 reference-app/

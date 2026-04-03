@@ -76,7 +76,7 @@ dependencies {
     
     // Gemini AI
     implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
-    
+
     // OkHttp
     implementation("com.squareup.okhttp3:okhttp:5.3.2")
     

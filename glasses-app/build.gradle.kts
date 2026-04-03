@@ -10,6 +10,13 @@ android {
     namespace = "com.rokid.translator.glasses"
     compileSdk = 36
 
+    val botPropsFile = rootProject.file("local.bot.properties")
+    val localPropsFile = rootProject.file("local.properties")
+    val mergedProps = Properties().apply {
+        if (localPropsFile.exists()) localPropsFile.inputStream().use { load(it) }
+        if (botPropsFile.exists()) botPropsFile.inputStream().use { load(it) }
+    }
+
     defaultConfig {
         applicationId = "com.rokid.translator.glasses"
         minSdk = 28
@@ -17,6 +24,10 @@ android {
         versionCode = 2
         versionName = "2.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "OPENROUTER_API_KEY", "\"${mergedProps.getProperty("OPENROUTER_API_KEY", "")}\"")
+        buildConfigField("String", "OPENROUTER_MODEL", "\"${mergedProps.getProperty("OPENROUTER_MODEL", "openai/gpt-4.1-mini")}\"")
+        buildConfigField("String", "OPENROUTER_SITE_URL", "\"${mergedProps.getProperty("OPENROUTER_SITE_URL", "")}\"")
+        buildConfigField("String", "OPENROUTER_APP_NAME", "\"${mergedProps.getProperty("OPENROUTER_APP_NAME", "Rokid Translator")}\"")
     }
 
     buildTypes {
@@ -51,6 +62,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("androidx.activity:activity-compose:1.8.2")
+    implementation("com.google.mlkit:translate:17.0.3")
 
     implementation(platform("androidx.compose:compose-bom:2024.02.00"))
     implementation("androidx.compose.ui:ui")
