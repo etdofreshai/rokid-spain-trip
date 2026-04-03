@@ -158,7 +158,7 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
         // Run in a separate job that won't be cancelled by temporary results
         viewModelScope.launch {
             var bestTranslation = fallbackTranslation
-            var provider = "Rokid"
+            var provider = if (fallbackTranslation.isNotBlank()) "Rokid" else ""
 
             // Try local translation to refine
             try {
@@ -440,7 +440,7 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                             sourceLanguage = sourceCode,
                             targetLanguage = targetCode,
                             resultId = resultId,
-                            fallbackTranslation = translated
+                            fallbackTranslation = if (isEcho) "" else rokidTranslated
                         )
                     } else {
                         // Temporary: kick off local translation to update hero
