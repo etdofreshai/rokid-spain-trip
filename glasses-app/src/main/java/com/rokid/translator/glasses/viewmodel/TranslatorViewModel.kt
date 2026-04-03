@@ -362,8 +362,8 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                     _state.update {
                         it.copy(
                             sourceText = source.ifBlank { it.sourceText },
-                            translatedText = if (!isEcho && rokidTranslated.isNotBlank()) rokidTranslated else it.translatedText,
-                            translationProvider = if (!isEcho && rokidTranslated.isNotBlank()) "Rokid" else it.translationProvider,
+                            translatedText = if (!isEcho && rokidTranslated.isNotBlank()) rokidTranslated else if (isEcho) "" else it.translatedText,
+                            translationProvider = if (!isEcho && rokidTranslated.isNotBlank()) "Rokid" else if (isEcho) "" else it.translationProvider,
                             isTranslating = true,
                             isTemporaryResult = isTemporary,
                             detectedLanguage = lang.ifBlank { it.detectedLanguage },
@@ -374,7 +374,14 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
 
                     if (source.isBlank()) return
 
-                    val (sourceCode, targetCode) = resolveDirection(source, _state.value.mode)
+                    // If Rokid provided a real translation, trust its direction
+                    // (Rokid scene is set to translate counterpart→English)
+                    val (sourceCode, targetCode) = if (!isEcho && rokidTranslated.isNotBlank()) {
+                        // Rokid translated successfully, source was likely the counterpart language
+                        preferredCounterpartCode to "en"
+                    } else {
+                        resolveDirection(source, _state.value.mode)
+                    }
                     val sourceLabel = languageDisplayName(sourceCode)
                     val targetLabel = languageDisplayName(targetCode)
 
