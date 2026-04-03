@@ -49,7 +49,6 @@ data class TranslatorState(
     val isConnected: Boolean = false,
     val isListening: Boolean = false,
     val isTemporaryResult: Boolean = false,
-    val silenceDelayMs: Long = 2000L,
     val debugLog: String = "",
 )
 
@@ -90,7 +89,6 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
     private var activeTranslationAlternatives: List<String> = emptyList()
     private var activeTranslationJob: Job? = null
     private var activeTranslationNonce = 0L
-    private var silenceJob: Job? = null
     private var preferredCounterpartCode = historyPrefs.getString(KEY_COUNTERPART_CODE, "it") ?: "it"
     private var preferredCounterpartLabel = historyPrefs.getString(KEY_COUNTERPART_LABEL, "Italian") ?: "Italian"
     private var listeningStartedAtMs = 0L
@@ -117,22 +115,6 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
         }
     }
 
-    fun cycleSilenceDelay() {
-        val options = longArrayOf(1000L, 1500L, 2000L, 3000L, 5000L)
-        val current = _state.value.silenceDelayMs
-        val nextIndex = (options.indexOf(current) + 1) % options.size
-        _state.update { it.copy(silenceDelayMs = options[nextIndex]) }
-        addLog("Silence delay: ${options[nextIndex]}ms")
-    }
-
-    private fun resetSilenceTimer() {
-        silenceJob?.cancel()
-        silenceJob = viewModelScope.launch {
-            delay(_state.value.silenceDelayMs)
-            finalizePhraseToHistory()
-        }
-    }
-
     private fun finalizePhraseToHistory() {
         val current = _state.value
         if (current.sourceText.isBlank()) return
@@ -155,7 +137,6 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
             addLog("TTS: $finalTranslation")
         }
 
-        // Keep last values visible, just mark as finalized
         _state.update {
             it.copy(
                 isTranslating = false,
@@ -164,6 +145,44 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
             )
         }
         addLog("Phrase finalized to history")
+    }
+
+    private fun requestLocalTranslationAndFinalize(
+        sourceText: String,
+        sourceLanguage: String,
+        targetLanguage: String,
+        resultId: Int?,
+        fallbackTranslation: String,
+    ) {
+        activeTranslationNonce += 1
+        val nonce = activeTranslationNonce
+        activeTranslationJob?.cancel()
+        activeTranslationJob = viewModelScope.launch {
+            if (nonce != activeTranslationNonce) return@launch
+
+            // Try local translation, then finalize with best result
+            try {
+                val translated = withTimeoutOrNull(3000) {
+                    localTranslator.translate(sourceText, sourceLanguage, targetLanguage)
+                }
+                if (nonce != activeTranslationNonce) return@launch
+                if (translated != null && translated.isNotBlank()) {
+                    _state.update {
+                        it.copy(
+                            translatedText = translated,
+                            translationProvider = "Local",
+                            isTranslating = false
+                        )
+                    }
+                    addLog("Local translation: $translated")
+                }
+            } catch (e: Exception) {
+                addLog("Local translation failed: ${e.message}")
+            }
+
+            // Finalize to history with whatever we have now
+            finalizePhraseToHistory()
+        }
     }
 
     fun toggleTranslation() {
@@ -347,10 +366,7 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                     }
                     beginResultTracking(resultId)
 
-                    // Reset silence timer on every result
-                    resetSilenceTimer()
-
-                    // Check if Rokid's translation is different from the source (actual translation vs echo)
+                    // Check if Rokid's translation is different from the source
                     val rokidTranslated = translated.trim()
                     val sourceNorm = source.trim().lowercase()
                     val transNorm = rokidTranslated.lowercase()
@@ -358,26 +374,23 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                         (sourceNorm == transNorm ||
                          sourceNorm.replace(Regex("[^\\p{L}\\s]"), "") == transNorm.replace(Regex("[^\\p{L}\\s]"), ""))
 
-                    // Always show heard text immediately + Rokid translation if it's real
+                    // Always show heard text immediately + Rokid translation if real
                     _state.update {
                         it.copy(
                             sourceText = source.ifBlank { it.sourceText },
                             translatedText = if (!isEcho && rokidTranslated.isNotBlank()) rokidTranslated else if (isEcho) "" else it.translatedText,
                             translationProvider = if (!isEcho && rokidTranslated.isNotBlank()) "Rokid" else if (isEcho) "" else it.translationProvider,
-                            isTranslating = true,
+                            isTranslating = isTemporary,
                             isTemporaryResult = isTemporary,
                             detectedLanguage = lang.ifBlank { it.detectedLanguage },
                             targetLanguage = target.ifBlank { it.targetLanguage },
-                            status = "Listening..."
+                            status = if (isTemporary) "Listening..." else "Translated"
                         )
                     }
 
                     if (source.isBlank()) return
 
-                    // If Rokid provided a real translation, trust its direction
-                    // (Rokid scene is set to translate counterpart→English)
                     val (sourceCode, targetCode) = if (!isEcho && rokidTranslated.isNotBlank()) {
-                        // Rokid translated successfully, source was likely the counterpart language
                         preferredCounterpartCode to "en"
                     } else {
                         resolveDirection(source, _state.value.mode)
@@ -393,16 +406,28 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                         )
                     }
 
-                    // Kick off local/cloud translation to refine
-                    requestLocalTranslation(
-                        sourceText = source,
-                        sourceLanguage = sourceCode,
-                        targetLanguage = targetCode,
-                        resultId = resultId,
-                        fallbackTranslation = translated,
-                        isTemporary = isTemporary,
-                        isFinished = isFinished
-                    )
+                    // On final result (temporary=false), insert to history
+                    if (!isTemporary) {
+                        // Let local translation refine first, then finalize
+                        requestLocalTranslationAndFinalize(
+                            sourceText = source,
+                            sourceLanguage = sourceCode,
+                            targetLanguage = targetCode,
+                            resultId = resultId,
+                            fallbackTranslation = translated
+                        )
+                    } else {
+                        // Temporary: kick off local translation to update hero
+                        requestLocalTranslation(
+                            sourceText = source,
+                            sourceLanguage = sourceCode,
+                            targetLanguage = targetCode,
+                            resultId = resultId,
+                            fallbackTranslation = translated,
+                            isTemporary = isTemporary,
+                            isFinished = isFinished
+                        )
+                    }
                 } catch (e: Exception) {
                     val alternatives = updateTranslationAlternatives(null, data)
                     _state.update {

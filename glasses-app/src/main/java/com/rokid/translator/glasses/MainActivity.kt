@@ -55,8 +55,7 @@ class MainActivity : ComponentActivity() {
                 TranslatorScreen(
                     state = viewModel.state.collectAsState().value,
                     onToggle = { viewModel.toggleTranslation() },
-                    onOpenWifi = { openWifiSettings() },
-                    onCycleSilenceDelay = { viewModel.cycleSilenceDelay() }
+                    onOpenWifi = { openWifiSettings() }
                 )
             }
         }
@@ -107,7 +106,6 @@ fun TranslatorScreen(
     state: com.rokid.translator.glasses.viewmodel.TranslatorState,
     onToggle: () -> Unit,
     onOpenWifi: () -> Unit,
-    onCycleSilenceDelay: () -> Unit = {},
 ) {
     val debugPreview = remember(state.debugLog) {
         state.debugLog
@@ -162,14 +160,6 @@ fun TranslatorScreen(
                         fontSize = 8.sp,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.clickable { onOpenWifi() }
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "${state.silenceDelayMs / 1000.0}s",
-                        color = Color(0xFFFF9800),
-                        fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.clickable { onCycleSilenceDelay() }
                     )
                 }
 
