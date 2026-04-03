@@ -351,15 +351,20 @@ private fun CompactFeedEntry(
             .padding(start = 1.dp, top = 0.dp, bottom = 0.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
+        if (entry.originalText.isNotBlank()) {
+            Text(
+                text = entry.originalText,
+                color = Color.White.copy(alpha = 0.5f),
+                fontSize = 6.sp,
+                lineHeight = 7.sp,
+                fontFamily = FontFamily.Monospace,
+                style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)),
+                softWrap = true
+            )
+        }
         Text(
-            text = buildString {
-                if (entry.originalText.isNotBlank()) append(entry.originalText)
-                if (entry.translatedText.isNotBlank()) {
-                    if (isNotEmpty()) append(" / ")
-                    append(entry.translatedText)
-                }
-            }.ifBlank { "-" },
-            color = Color.White.copy(alpha = 0.68f),
+            text = entry.translatedText.ifBlank { "..." },
+            color = Color.White.copy(alpha = 0.8f),
             fontSize = 7.sp,
             lineHeight = 8.sp,
             fontFamily = FontFamily.Monospace,
