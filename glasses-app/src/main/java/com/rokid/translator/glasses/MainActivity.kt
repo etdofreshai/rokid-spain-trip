@@ -317,20 +317,25 @@ private fun FeedPane(
     modifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
-    // History = all entries except the last (active) one, newest first
-    val historyEntries = remember(entries) {
-        if (entries.size > 1) entries.dropLast(1).asReversed().take(15) else emptyList()
+    val hasLiveContent = liveOriginal.isNotBlank() || liveTranslation.isNotBlank()
+
+    // History: newest first (closest to hero), skip the active entry if live content is showing
+    val historyEntries = remember(entries, hasLiveContent) {
+        val list = if (hasLiveContent && entries.isNotEmpty()) entries.dropLast(1) else entries
+        list.asReversed().take(15)
     }
 
-    val heroEntry = TranslationFeedEntry(
-        resultId = null,
-        originalText = liveOriginal.ifBlank { entries.lastOrNull()?.originalText ?: "Waiting for speech..." },
-        translatedText = liveTranslation.ifBlank { entries.lastOrNull()?.translatedText ?: "Waiting for translation..." },
-        pronunciationText = livePronunciation.ifBlank { entries.lastOrNull()?.pronunciationText ?: "" },
-        provider = "",
-        sourceLanguage = "",
-        targetLanguage = ""
-    )
+    val heroEntry = if (hasLiveContent) {
+        TranslationFeedEntry(
+            resultId = null,
+            originalText = liveOriginal,
+            translatedText = liveTranslation,
+            pronunciationText = livePronunciation,
+            provider = "", sourceLanguage = "", targetLanguage = ""
+        )
+    } else {
+        null
+    }
 
     LaunchedEffect(entries.size, liveTranslation, livePronunciation) {
         scrollState.animateScrollTo(0)
@@ -342,7 +347,9 @@ private fun FeedPane(
             .fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        HeroFeedEntry(entry = heroEntry)
+        if (heroEntry != null) {
+            HeroFeedEntry(entry = heroEntry)
+        }
         historyEntries.forEach { entry ->
             CompactFeedEntry(entry = entry)
         }
