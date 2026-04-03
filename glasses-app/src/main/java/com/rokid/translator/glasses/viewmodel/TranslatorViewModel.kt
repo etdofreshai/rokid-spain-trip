@@ -149,13 +149,9 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
             targetLanguage = current.targetLanguage
         )
 
-        // Clear hero for next phrase
+        // Keep last values visible, just mark as finalized
         _state.update {
             it.copy(
-                sourceText = "",
-                translatedText = "",
-                pronunciationText = "",
-                translationProvider = "",
                 isTranslating = false,
                 isTemporaryResult = false,
                 status = statusForMode(it.mode, connected = it.isConnected, listening = it.isListening)

@@ -345,17 +345,17 @@ private fun HeroFeedEntry(
         horizontalAlignment = Alignment.Start,
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        FeedHeroLine(label = "heard", value = entry.originalText.ifBlank { "-"}, valueFontSize = 9.sp)
+        FeedHeroLine(label = "heard", value = entry.originalText.ifBlank { "-"}, valueFontSize = 11.sp)
         FeedHeroLine(
             label = "trans",
             value = entry.translatedText.ifBlank { "-" },
-            valueFontSize = 7.sp
+            valueFontSize = 9.sp
         )
         if (entry.pronunciationText.isNotBlank()) {
             FeedHeroLine(
                 label = "say",
                 value = entry.pronunciationText,
-                valueFontSize = 6.sp,
+                valueFontSize = 7.sp,
                 valueColor = Color.White.copy(alpha = 0.72f)
             )
         }
@@ -381,8 +381,8 @@ private fun CompactFeedEntry(
                 }
             }.ifBlank { "-" },
             color = Color.White.copy(alpha = 0.68f),
-            fontSize = 6.sp,
-            lineHeight = 7.sp,
+            fontSize = 7.sp,
+            lineHeight = 8.sp,
             fontFamily = FontFamily.Monospace,
             style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)),
             softWrap = true
