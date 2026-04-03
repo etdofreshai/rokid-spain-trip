@@ -184,7 +184,7 @@ fun TranslatorScreen(
                 }
             }
 
-            if (state.mode != TranslationMode.DISABLED || languageDisplay.isNotEmpty()) {
+            if (state.mode != TranslationMode.DISABLED) {
                 Text(
                     text = listOf(state.mode.label, languageDisplay)
                         .filter { it.isNotBlank() }
@@ -198,8 +198,6 @@ fun TranslatorScreen(
 
             if (state.mode == TranslationMode.DISABLED) {
                 ModeMenuPane(
-                    counterpartLanguage = state.counterpartLanguageLabel,
-                    phoneModel = state.phoneModel,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(0.42f)
@@ -275,26 +273,12 @@ private fun StatusBadge(
 
 @Composable
 private fun ModeMenuPane(
-    counterpartLanguage: String,
-    phoneModel: String,
     modifier: Modifier = Modifier,
 ) {
     Column(
         modifier = modifier.padding(top = 2.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        if (counterpartLanguage.isNotBlank() || phoneModel.isNotBlank()) {
-            Text(
-                text = listOf(
-                    "$counterpartLanguage <-> English",
-                    if (phoneModel.isNotBlank()) "Phone STT: $phoneModel" else ""
-                ).filter { it.isNotBlank() }.joinToString("  |  "),
-                color = Color(0xFF888888),
-                fontSize = 4.sp,
-                fontFamily = FontFamily.Monospace
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-        }
         Text(
             text = "Tap to cycle modes",
             color = Color(0xFF7FB7C9),
@@ -303,7 +287,7 @@ private fun ModeMenuPane(
             fontFamily = FontFamily.Monospace
         )
         ModeMenuLine("1", "Disabled", "Stop listening and show this menu")
-        ModeMenuLine("2", "Local", "$counterpartLanguage <-> English (auto-detect)")
+        ModeMenuLine("2", "Local", "On-device translation")
         ModeMenuLine("3", "Online", "Requires Wi-Fi / hotspot")
     }
 }

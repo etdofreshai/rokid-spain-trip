@@ -223,19 +223,6 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
             markTranslationRequested("bridge reconnect mode=${selectedMode.label}")
             addLog("Bridge connected - requesting translation start for ${selectedMode.label}")
             bridge.startTranslation()
-        } else {
-            // Probe: briefly start scene to get language info, then stop
-            addLog("Probing phone for language config...")
-            _state.update { it.copy(status = "Connecting to phone...") }
-            bridge.startTranslation()
-            viewModelScope.launch {
-                delay(8000)
-                if (_state.value.mode == TranslationMode.DISABLED) {
-                    bridge.stopTranslation()
-                    _state.update { it.copy(status = statusForMode(it.mode, connected = true, listening = false)) }
-                    addLog("Probe complete - stopped scene")
-                }
-            }
         }
         _state.update {
             it.copy(
