@@ -25,7 +25,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 enum class TranslationMode(val label: String) {
     DISABLED("Disabled"),
-    LOCAL("Local"),
+    LOCAL_SILENT("Local Silent"),
+    LOCAL_TTS("Local TTS"),
     ONLINE("Online");
 }
 
@@ -136,7 +137,6 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
         val current = _state.value
         if (current.sourceText.isBlank()) return
 
-        // If still translating and no translation yet, use what we have
         val finalTranslation = current.translatedText
 
         upsertFeedEntry(
@@ -148,6 +148,12 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
             sourceLanguage = current.detectedLanguage,
             targetLanguage = current.targetLanguage
         )
+
+        // Speak translation in TTS mode
+        if (current.mode == TranslationMode.LOCAL_TTS && finalTranslation.isNotBlank()) {
+            bridge.playTts(finalTranslation)
+            addLog("TTS: $finalTranslation")
+        }
 
         // Keep last values visible, just mark as finalized
         _state.update {
@@ -493,7 +499,7 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
 
     private fun resolveDirection(sourceText: String, mode: TranslationMode): Pair<String, String> =
         when (mode) {
-            TranslationMode.LOCAL, TranslationMode.ONLINE -> {
+            TranslationMode.LOCAL_SILENT, TranslationMode.LOCAL_TTS, TranslationMode.ONLINE -> {
                 val sourceLanguage = ConversationLanguageDetector.detect(sourceText, preferredCounterpartCode)
                 val targetLanguage = if (sourceLanguage == "en") preferredCounterpartCode else "en"
                 sourceLanguage to targetLanguage
@@ -740,8 +746,8 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
                 if (changed) {
                     addLog(if (online) "Network online" else "Network offline")
                     if (!online && _state.value.mode == TranslationMode.ONLINE) {
-                        addLog("Online unavailable offline - switching to Local")
-                        applyMode(TranslationMode.LOCAL)
+                        addLog("Online unavailable offline - switching to Local Silent")
+                        applyMode(TranslationMode.LOCAL_SILENT)
                     }
                 }
             }
@@ -1063,7 +1069,8 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
     private fun routeLabelForMode(mode: TranslationMode): String =
         when (mode) {
             TranslationMode.DISABLED -> "Tap to choose mode"
-            TranslationMode.LOCAL -> "$preferredCounterpartLabel <-> English"
+            TranslationMode.LOCAL_SILENT -> "$preferredCounterpartLabel <-> English"
+            TranslationMode.LOCAL_TTS -> "$preferredCounterpartLabel <-> English"
             TranslationMode.ONLINE -> "$preferredCounterpartLabel <-> English (cloud)"
         }
 
@@ -1082,8 +1089,9 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
 
     private fun nextMode(current: TranslationMode, onlineAvailable: Boolean): TranslationMode =
         when (current) {
-            TranslationMode.DISABLED -> TranslationMode.LOCAL
-            TranslationMode.LOCAL -> if (onlineAvailable) TranslationMode.ONLINE else TranslationMode.DISABLED
+            TranslationMode.DISABLED -> TranslationMode.LOCAL_SILENT
+            TranslationMode.LOCAL_SILENT -> TranslationMode.LOCAL_TTS
+            TranslationMode.LOCAL_TTS -> if (onlineAvailable) TranslationMode.ONLINE else TranslationMode.DISABLED
             TranslationMode.ONLINE -> TranslationMode.DISABLED
         }
 
@@ -1095,20 +1103,27 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
     ): String =
         when (mode) {
             TranslationMode.DISABLED -> if (connected) "Mode disabled" else "Connecting..."
-            TranslationMode.LOCAL ->
+            TranslationMode.LOCAL_SILENT ->
                 when {
-                    !connected -> "Local mode - connecting..."
-                    starting -> "Local mode - starting..."
-                    listening -> "Local mode listening"
-                    else -> "Local mode ready"
+                    !connected -> "Local silent - connecting..."
+                    starting -> "Local silent - starting..."
+                    listening -> "Local silent listening"
+                    else -> "Local silent ready"
+                }
+            TranslationMode.LOCAL_TTS ->
+                when {
+                    !connected -> "Local TTS - connecting..."
+                    starting -> "Local TTS - starting..."
+                    listening -> "Local TTS listening"
+                    else -> "Local TTS ready"
                 }
             TranslationMode.ONLINE ->
                 when {
-                    !connected -> "Online mode - connecting..."
-                    !this._state.value.isOnline -> "Online selected - offline fallback"
-                    starting -> "Online mode - starting..."
-                    listening -> "Online mode listening"
-                    else -> "Online mode ready"
+                    !connected -> "Online - connecting..."
+                    !this._state.value.isOnline -> "Online - offline fallback"
+                    starting -> "Online - starting..."
+                    listening -> "Online listening"
+                    else -> "Online ready"
                 }
         }
 

@@ -186,9 +186,11 @@ fun TranslatorScreen(
 
             if (state.mode != TranslationMode.DISABLED) {
                 Text(
-                    text = listOf(state.mode.label, languageDisplay)
-                        .filter { it.isNotBlank() }
-                        .joinToString("  "),
+                    text = listOf(
+                        state.mode.label,
+                        languageDisplay,
+                        if (state.translationProvider.isNotBlank()) "[${state.translationProvider}]" else ""
+                    ).filter { it.isNotBlank() }.joinToString("  "),
                     color = Color(0xFF4CAF50),
                     fontSize = 5.sp,
                     fontWeight = FontWeight.Bold,
@@ -286,8 +288,9 @@ private fun ModeMenuPane(
             fontFamily = FontFamily.Monospace
         )
         ModeMenuLine("1", "Disabled", "Stop listening and show this menu")
-        ModeMenuLine("2", "Local", "On-device translation")
-        ModeMenuLine("3", "Online", "Requires Wi-Fi / hotspot")
+        ModeMenuLine("2", "Local Silent", "On-device, text only")
+        ModeMenuLine("3", "Local TTS", "On-device, speaks translation")
+        ModeMenuLine("4", "Online", "Cloud translation, requires Wi-Fi")
     }
 }
 
