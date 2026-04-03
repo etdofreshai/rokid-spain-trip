@@ -988,37 +988,19 @@ class TranslatorViewModel(private val context: Context) : ViewModel(), AssistBri
         sourceLanguage: String,
         targetLanguage: String,
     ) {
+        if (originalText.isBlank() && translatedText.isBlank()) return
         _state.update { current ->
-            val entries = current.feedEntries.toMutableList()
-            val existingIndex = entries.indexOfLast { it.resultId == resultId && resultId != null }
-            val newPriority = providerPriority(provider)
-
-            if (existingIndex >= 0) {
-                val existing = entries[existingIndex]
-                val existingPriority = providerPriority(existing.provider)
-                val canReplaceProvider = newPriority >= existingPriority
-                entries[existingIndex] = existing.copy(
-                    originalText = originalText.ifBlank { existing.originalText },
-                    translatedText = if (canReplaceProvider) translatedText.ifBlank { existing.translatedText } else existing.translatedText,
-                    pronunciationText = if (canReplaceProvider) pronunciationText.ifBlank { existing.pronunciationText } else existing.pronunciationText,
-                    provider = if (canReplaceProvider) provider.ifBlank { existing.provider } else existing.provider,
-                    sourceLanguage = sourceLanguage.ifBlank { existing.sourceLanguage },
-                    targetLanguage = targetLanguage.ifBlank { existing.targetLanguage }
-                )
-            } else {
-                if (originalText.isBlank() && translatedText.isBlank()) return@update current
-                entries += TranslationFeedEntry(
-                    resultId = resultId,
-                    originalText = originalText,
-                    translatedText = translatedText,
-                    pronunciationText = pronunciationText,
-                    provider = provider,
-                    sourceLanguage = sourceLanguage,
-                    targetLanguage = targetLanguage
-                )
-            }
-
-            val updated = entries.takeLast(20)
+            val entry = TranslationFeedEntry(
+                resultId = resultId,
+                originalText = originalText,
+                translatedText = translatedText,
+                pronunciationText = pronunciationText,
+                provider = provider,
+                sourceLanguage = sourceLanguage,
+                targetLanguage = targetLanguage
+            )
+            // Insert at the beginning (newest first)
+            val updated = (listOf(entry) + current.feedEntries).take(20)
             saveFeedHistory(updated)
             current.copy(feedEntries = updated)
         }

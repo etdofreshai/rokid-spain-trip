@@ -207,9 +207,6 @@ fun TranslatorScreen(
             } else {
                 FeedPane(
                     entries = state.feedEntries,
-                    liveOriginal = state.sourceText,
-                    liveTranslation = if (state.isTranslating && state.translatedText.isBlank()) "..." else state.translatedText,
-                    livePronunciation = state.pronunciationText,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(0.70f)
@@ -297,29 +294,11 @@ private fun ModeMenuPane(
 @Composable
 private fun FeedPane(
     entries: List<TranslationFeedEntry>,
-    liveOriginal: String,
-    liveTranslation: String,
-    livePronunciation: String,
     modifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
-    val hasLiveContent = liveOriginal.isNotBlank() || liveTranslation.isNotBlank()
 
-    // History: newest first (closest to hero), skip the active entry if live content is showing
-    val historyEntries = remember(entries, hasLiveContent) {
-        val list = if (hasLiveContent && entries.isNotEmpty()) entries.dropLast(1) else entries
-        list.asReversed().take(15)
-    }
-
-    val heroEntry = TranslationFeedEntry(
-        resultId = null,
-        originalText = if (hasLiveContent) liveOriginal else "",
-        translatedText = if (hasLiveContent) liveTranslation else "",
-        pronunciationText = if (hasLiveContent) livePronunciation else "",
-        provider = "", sourceLanguage = "", targetLanguage = ""
-    )
-
-    LaunchedEffect(entries.size, liveTranslation, livePronunciation) {
+    LaunchedEffect(entries.firstOrNull()?.originalText, entries.firstOrNull()?.translatedText) {
         scrollState.animateScrollTo(0)
     }
 
@@ -329,12 +308,19 @@ private fun FeedPane(
             .fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        HeroFeedEntry(entry = heroEntry)
-        if (historyEntries.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(2.dp))
-        }
-        historyEntries.forEach { entry ->
-            CompactFeedEntry(entry = entry)
+        if (entries.isEmpty()) {
+            HeroFeedEntry(entry = TranslationFeedEntry(
+                resultId = null, originalText = "-", translatedText = "-",
+                provider = "", sourceLanguage = "", targetLanguage = ""
+            ))
+        } else {
+            HeroFeedEntry(entry = entries.first())
+            if (entries.size > 1) {
+                Spacer(modifier = Modifier.height(2.dp))
+            }
+            entries.drop(1).take(15).forEach { entry ->
+                CompactFeedEntry(entry = entry)
+            }
         }
     }
 }
